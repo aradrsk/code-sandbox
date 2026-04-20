@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { LANGS, runProcess, sessionDir } from "@/lib/runner";
+import { LANGS, runWithFallbacks, sessionDir } from "@/lib/runner";
 
 export const runtime = "nodejs";
 
@@ -14,7 +14,7 @@ export async function POST(req: NextRequest) {
 
   const filePath = join(cwd, lang.file);
   writeFileSync(filePath, code ?? "", "utf8");
-  const [cmd, args] = lang.build(lang.file);
-  const result = await runProcess(cmd, args, cwd, stdin);
+  const candidates = lang.build(lang.file);
+  const result = await runWithFallbacks(candidates, cwd, stdin);
   return NextResponse.json(result);
 }

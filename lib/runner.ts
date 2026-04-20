@@ -11,16 +11,16 @@ export const MAX_OUTPUT_BYTES = 200_000;
 
 export type Lang = {
   file: string;
-  build: (file: string) => [string, string[]];
+  build: (file: string) => Array<[string, string[]]>;
 };
 
 export const LANGS: Record<string, Lang> = {
-  javascript: { file: "main.js", build: (f) => ["node", [f]] },
-  python:     { file: "main.py", build: (f) => ["python", [f]] },
-  typescript: { file: "main.ts", build: (f) => ["npx", ["-y", "tsx", f]] },
-  bash:       { file: "main.sh", build: (f) => ["bash", [f]] },
-  ruby:       { file: "main.rb", build: (f) => ["ruby", [f]] },
-  go:         { file: "main.go", build: (f) => ["go", ["run", f]] },
+  javascript: { file: "main.js", build: (f) => [["node", [f]]] },
+  python:     { file: "main.py", build: (f) => [["python", [f]], ["python3", [f]], ["py", ["-3", f]]] },
+  typescript: { file: "main.ts", build: (f) => [["npx", ["-y", "tsx", f]]] },
+  bash:       { file: "main.sh", build: (f) => [["bash", [f]]] },
+  ruby:       { file: "main.rb", build: (f) => [["ruby", [f]]] },
+  go:         { file: "main.go", build: (f) => [["go", ["run", f]]] },
 };
 
 export function sessionDir(id: string): string {
@@ -32,6 +32,17 @@ export function sessionDir(id: string): string {
 }
 
 export type RunResult = { stdout: string; stderr: string; code: number; killed: boolean };
+
+export async function runWithFallbacks(candidates: Array<[string, string[]]>, cwd: string, stdin?: string): Promise<RunResult> {
+  let last: RunResult | null = null;
+  for (const [cmd, args] of candidates) {
+    const r = await runProcess(cmd, args, cwd, stdin);
+    last = r;
+    const enoent = r.code === -1 && /ENOENT/.test(r.stderr);
+    if (!enoent) return r;
+  }
+  return last!;
+}
 
 export function runProcess(cmd: string, args: string[], cwd: string, stdin?: string): Promise<RunResult> {
   return new Promise((resolveP) => {
