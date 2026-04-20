@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Code Sandbox</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; background: #1e1e1e; color: #ddd; font: 14px/1.4 ui-sans-serif, system-ui, sans-serif; }
+  #app { display: grid; grid-template-rows: auto 1fr auto; height: 100vh; }
+  header { padding: 8px 12px; background: #252526; display: flex; gap: 8px; align-items: center; border-bottom: 1px solid #333; }
+  header select, header button, header input { background: #333; color: #eee; border: 1px solid #444; padding: 6px 10px; border-radius: 4px; font: inherit; }
+  header button { cursor: pointer; }
+  header button.primary { background: #0e639c; border-color: #1177bb; }
+  header button:hover { filter: brightness(1.15); }
+  main { display: grid; grid-template-columns: 1.4fr 1fr; min-height: 0; }
+  #editor { min-height: 0; border-right: 1px solid #333; }
+  #right { display: grid; grid-template-rows: 1fr auto auto; min-height: 0; }
+  #output { padding: 10px 12px; overflow: auto; white-space: pre-wrap; font-family: ui-monospace, Menlo, Consolas, monospace; background: #111; }
+  #output .err { color: #f48771; }
+  #output .meta { color: #8a8a8a; }
+  #shell { display: flex; gap: 6px; padding: 8px; background: #252526; border-top: 1px solid #333; }
+  #shell input { flex: 1; background: #1e1e1e; color: #eee; border: 1px solid #444; padding: 6px 10px; border-radius: 4px; font-family: ui-monospace, Menlo, Consolas, monospace; }
+  #stdinwrap { display: flex; flex-direction: column; padding: 8px; background: #252526; border-top: 1px solid #333; }
+  #stdinwrap label { color: #888; font-size: 12px; margin-bottom: 4px; }
+  #stdin { background: #1e1e1e; color: #eee; border: 1px solid #444; padding: 6px 10px; border-radius: 4px; font-family: ui-monospace, Menlo, Consolas, monospace; min-height: 48px; resize: vertical; }
+  footer { padding: 4px 10px; background: #007acc; color: white; font-size: 12px; display: flex; justify-content: space-between; }
+</style>
+<link rel="stylesheet" data-name="vs/editor/editor.main" href="https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs/editor/editor.main.css" />
+</head>
+<body>
+<div id="app">
+  <header>
+    <strong>Code Sandbox</strong>
+    <select id="lang">
+      <option value="javascript">JavaScript</option>
+      <option value="python">Python</option>
+      <option value="typescript">TypeScript</option>
+      <option value="bash">Bash</option>
+      <option value="ruby">Ruby</option>
+      <option value="go">Go</option>
+    </select>
+    <button id="run" class="primary">▶ Run (Ctrl+Enter)</button>
+    <button id="clear">Clear output</button>
+    <span style="flex:1"></span>
+    <span id="status" style="color:#9c9">ready</span>
+  </header>
+  <main>
+    <div id="editor"></div>
+    <div id="right">
+      <div id="output"><span class="meta">Output will appear here.</span></div>
+      <div id="stdinwrap">
+        <label for="stdin">stdin (optional)</label>
+        <textarea id="stdin" spellcheck="false"></textarea>
+      </div>
+      <form id="shell" autocomplete="off">
+        <input id="cmd" placeholder="$ shell command in session workdir (e.g. ls, pip install requests)" />
+        <button type="submit">Exec</button>
+      </form>
+    </div>
+  </main>
+  <footer>
+    <span id="cwd">workdir: —</span>
+    <span>session: <span id="sid">—</span></span>
+  </footer>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs/loader.js"></script>
+<script>
+const STARTERS = {
+  javascript: "console.log('hello from node', process.version);\n",
+  python:     "print('hello from python')\n",
+  typescript: "const msg: string = 'hello from ts';\nconsole.log(msg);\n",
+  bash:       "echo \"hello from bash, pwd=$(pwd)\"\n",
+  ruby:       "puts 'hello from ruby'\n",
+  go:         "package main\nimport \"fmt\"\nfunc main() { fmt.Println(\"hello from go\") }\n",
+};
+const MONACO_LANG = { javascript:"javascript", python:"python", typescript:"typescript", bash:"shell", ruby:"ruby", go:"go" };
+
+let editor, sessionId;
+const $ = (id) => document.getElementById(id);
+
+async function newSession() {
+  const r = await fetch("/api/session", { method: "POST" });
+  const j = await r.json();
+  sessionId = j.id;
+  $("sid").textContent = sessionId.slice(0, 8);
+}
+
+function appendOutput(text, cls) {
+  const out = $("output");
+  const span = document.createElement("span");
+  if (cls) span.className = cls;
+  span.textContent = text;
+  out.appendChild(span);
+  out.scrollTop = out.scrollHeight;
+}
+
+function clearOutput() { $("output").innerHTML = ""; }
+
+async function run() {
+  const language = $("lang").value;
+  const code = editor.getValue();
+  const stdin = $("stdin").value;
+  $("status").textContent = "running…";
+  $("run").disabled = true;
+  try {
+    const r = await fetch("/api/run", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId, language, code, stdin }),
+    });
+    const j = await r.json();
+    clearOutput();
+    if (j.stdout) appendOutput(j.stdout);
+    if (j.stderr) appendOutput(j.stderr, "err");
+    appendOutput(`\n[exit ${j.code}${j.killed ? ", killed (timeout/output limit)" : ""}]\n`, "meta");
+  } catch (e) {
+    appendOutput(`\n[client error] ${e.message}\n`, "err");
+  } finally {
+    $("status").textContent = "ready";
+    $("run").disabled = false;
+  }
+}
+
+async function exec(cmd) {
+  appendOutput(`\n$ ${cmd}\n`, "meta");
+  try {
+    const r = await fetch("/api/exec", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId, command: cmd }),
+    });
+    const j = await r.json();
+    if (j.stdout) appendOutput(j.stdout);
+    if (j.stderr) appendOutput(j.stderr, "err");
+    appendOutput(`[exit ${j.code}${j.killed ? ", killed" : ""}]\n`, "meta");
+    if (j.cwd) $("cwd").textContent = "workdir: " + j.cwd;
+  } catch (e) {
+    appendOutput(`[client error] ${e.message}\n`, "err");
+  }
+}
+
+require.config({ paths: { vs: "https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs" } });
+require(["vs/editor/editor.main"], async () => {
+  await newSession();
+  const lang = $("lang").value;
+  editor = monaco.editor.create($("editor"), {
+    value: STARTERS[lang],
+    language: MONACO_LANG[lang],
+    theme: "vs-dark",
+    fontSize: 14,
+    automaticLayout: true,
+    minimap: { enabled: false },
+  });
+  editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, run);
+
+  $("lang").addEventListener("change", (e) => {
+    const l = e.target.value;
+    monaco.editor.setModelLanguage(editor.getModel(), MONACO_LANG[l]);
+    if (!editor.getValue().trim() || confirm("Replace editor with starter snippet for " + l + "?")) {
+      editor.setValue(STARTERS[l]);
+    }
+  });
+  $("run").addEventListener("click", run);
+  $("clear").addEventListener("click", clearOutput);
+  $("shell").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const v = $("cmd").value.trim();
+    if (!v) return;
+    $("cmd").value = "";
+    exec(v);
+  });
+
+  // initial pwd
+  exec(process?.platform === "win32" ? "cd" : "pwd");
+});
+</script>
+</body>
+</html>
