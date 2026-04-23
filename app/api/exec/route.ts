@@ -1,20 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
-import { runProcess, sessionDir } from "@/lib/runner";
+import { pistonExecute } from "@/lib/piston";
 
 export const runtime = "nodejs";
+export const maxDuration = 30;
 
 export async function POST(req: NextRequest) {
-  const { sessionId, command } = await req.json();
+  const { command } = await req.json();
   if (!command || typeof command !== "string") {
     return NextResponse.json({ error: "missing command" }, { status: 400 });
   }
-  let cwd: string;
-  try { cwd = sessionDir(sessionId); } catch { return NextResponse.json({ error: "bad session" }, { status: 400 }); }
-
-  const isWin = process.platform === "win32";
-  const [cmd, args]: [string, string[]] = isWin
-    ? ["cmd.exe", ["/d", "/s", "/c", command]]
-    : ["bash", ["-lc", command]];
-  const result = await runProcess(cmd, args, cwd);
-  return NextResponse.json({ ...result, cwd });
+  try {
+    const result = await pistonExecute("bash", command);
+    return NextResponse.json({ ...result, cwd: "/piston (sandboxed, stateless)" });
+  } catch (e: any) {
+    return NextResponse.json({ stdout: "", stderr: `[exec error] ${e.message}`, code: -1, killed: false, cwd: "—" });
+  }
 }
