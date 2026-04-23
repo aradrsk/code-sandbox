@@ -107,7 +107,7 @@ function PythonLogo({ size = 24 }: { size?: number }) {
 type Theme = "dark" | "light";
 
 export default function Page() {
-  const [theme, setTheme] = useState<Theme>("dark");
+  const [theme, setTheme] = useState<Theme>("light");
   const [code, setCode] = useState(STARTER);
   const [stdin, setStdin] = useState("");
   const [busy, setBusy] = useState(false);
@@ -125,7 +125,7 @@ export default function Page() {
 
   useEffect(() => {
     const saved = (typeof window !== "undefined" && localStorage.getItem("theme")) as Theme | null;
-    const initial: Theme = saved ?? (window.matchMedia?.("(prefers-color-scheme: light)").matches ? "light" : "dark");
+    const initial: Theme = saved ?? (window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light");
     setTheme(initial);
   }, []);
 
