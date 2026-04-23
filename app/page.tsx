@@ -27,6 +27,8 @@ export default function Page() {
   const [cmd, setCmd] = useState("");
   const [cwd, setCwd] = useState("—");
   const [busy, setBusy] = useState(false);
+  const [explaining, setExplaining] = useState(false);
+  const [lastRun, setLastRun] = useState<{ stdout: string; stderr: string; code: number } | null>(null);
   const [lines, setLines] = useState<OutLine[]>([{ text: "Output will appear here.", kind: "meta" }]);
   const codeRef = useRef(code);
   codeRef.current = code;
@@ -68,6 +70,7 @@ export default function Page() {
       if (j.stdout) append(j.stdout, "out");
       if (j.stderr) append(j.stderr, "err");
       append(`\n[exit ${j.code}${j.killed ? ", killed (timeout/output limit)" : ""}]\n`, "meta");
+      setLastRun({ stdout: j.stdout ?? "", stderr: j.stderr ?? "", code: j.code });
     } catch (e: any) {
       append(`\n[client error] ${e.message}\n`, "err");
     } finally {
@@ -94,6 +97,34 @@ export default function Page() {
     }
   }
 
+  async function explain() {
+    if (!lastRun) return;
+    setExplaining(true);
+    append(`\n[asking AI to explain the error...]\n`, "meta");
+    try {
+      const r = await fetch("/api/explain", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          language: langRef.current,
+          code: codeRef.current,
+          stdout: lastRun.stdout,
+          stderr: lastRun.stderr,
+          exitCode: lastRun.code,
+        }),
+      });
+      const j = await r.json();
+      if (j.error) append(`\n[AI error] ${j.error}\n`, "err");
+      else append(`\n${j.explanation}\n`, "meta");
+    } catch (e: any) {
+      append(`\n[client error] ${e.message}\n`, "err");
+    } finally {
+      setExplaining(false);
+    }
+  }
+
+  const hasError = !!lastRun && (lastRun.code !== 0 || !!lastRun.stderr);
+
   function changeLang(l: string) {
     setLanguage(l);
     if (!code.trim() || confirm(`Replace editor with starter snippet for ${l}?`)) setCode(STARTERS[l]);
@@ -110,6 +141,14 @@ export default function Page() {
           {busy ? "Running…" : "▶ Run (Ctrl+Enter)"}
         </button>
         <button onClick={() => setLines([])} style={{ ...ctrl, cursor: "pointer" }}>Clear output</button>
+        <button
+          onClick={explain}
+          disabled={!hasError || explaining}
+          title={hasError ? "Ask AI to explain the error" : "Run code that errors to enable"}
+          style={{ ...ctrl, background: hasError ? "#8b3a3a" : "#333", borderColor: hasError ? "#b04a4a" : "#444", cursor: hasError ? "pointer" : "not-allowed" }}
+        >
+          {explaining ? "Thinking…" : "✨ Explain error (AI)"}
+        </button>
         <span style={{ flex: 1 }} />
         <span style={{ color: "#9c9" }}>{busy ? "running…" : "ready"}</span>
       </header>
