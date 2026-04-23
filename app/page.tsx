@@ -16,6 +16,10 @@ const MONACO_LANG: Record<string, string> = {
   javascript: "javascript", python: "python", typescript: "typescript",
   bash: "shell", ruby: "ruby", go: "go",
 };
+const LANG_LABEL: Record<string, string> = {
+  javascript: "JavaScript", python: "Python", typescript: "TypeScript",
+  bash: "Bash", ruby: "Ruby", go: "Go",
+};
 
 type OutLine = { text: string; kind: "out" | "err" | "meta" };
 
@@ -29,14 +33,12 @@ export default function Page() {
   const [busy, setBusy] = useState(false);
   const [explaining, setExplaining] = useState(false);
   const [lastRun, setLastRun] = useState<{ stdout: string; stderr: string; code: number } | null>(null);
-  const [lines, setLines] = useState<OutLine[]>([{ text: "Output will appear here.", kind: "meta" }]);
-  const codeRef = useRef(code);
-  codeRef.current = code;
-  const stdinRef = useRef(stdin);
-  stdinRef.current = stdin;
-  const langRef = useRef(language);
-  langRef.current = language;
+  const [lines, setLines] = useState<OutLine[]>([{ text: "Output will appear here. Press Ctrl+Enter to run.", kind: "meta" }]);
+  const codeRef = useRef(code); codeRef.current = code;
+  const stdinRef = useRef(stdin); stdinRef.current = stdin;
+  const langRef = useRef(language); langRef.current = language;
   const sidRef = useRef("");
+  const outRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     fetch("/api/session", { method: "POST" })
@@ -51,6 +53,10 @@ export default function Page() {
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, []);
+
+  useEffect(() => {
+    if (outRef.current) outRef.current.scrollTop = outRef.current.scrollHeight;
+  }, [lines]);
 
   function append(text: string, kind: OutLine["kind"] = "out") {
     setLines((ls) => [...ls, { text, kind }]);
@@ -100,7 +106,7 @@ export default function Page() {
   async function explain() {
     if (!lastRun) return;
     setExplaining(true);
-    append(`\n[asking AI to explain the error...]\n`, "meta");
+    append(`\n✨ Asking AI to explain the error...\n`, "meta");
     try {
       const r = await fetch("/api/explain", {
         method: "POST",
@@ -127,72 +133,148 @@ export default function Page() {
 
   function changeLang(l: string) {
     setLanguage(l);
-    if (!code.trim() || confirm(`Replace editor with starter snippet for ${l}?`)) setCode(STARTERS[l]);
+    if (!code.trim() || confirm(`Replace editor with starter snippet for ${LANG_LABEL[l]}?`)) setCode(STARTERS[l]);
   }
 
   return (
-    <div style={{ display: "grid", gridTemplateRows: "auto 1fr auto", height: "100vh" }}>
-      <header style={{ padding: "8px 12px", background: "#252526", display: "flex", gap: 8, alignItems: "center", borderBottom: "1px solid #333" }}>
-        <strong>Code Sandbox</strong>
-        <select value={language} onChange={(e) => changeLang(e.target.value)} style={ctrl}>
-          {Object.keys(STARTERS).map((l) => <option key={l} value={l}>{l}</option>)}
+    <div style={{ position: "relative", display: "grid", gridTemplateRows: "auto 1fr auto", height: "100vh", zIndex: 1 }}>
+      <header style={{
+        padding: "12px 18px",
+        display: "flex",
+        gap: 10,
+        alignItems: "center",
+        background: "rgba(15, 18, 24, 0.7)",
+        backdropFilter: "blur(12px)",
+        borderBottom: "1px solid var(--border)",
+      }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginRight: 8 }}>
+          <div style={{
+            width: 28, height: 28, borderRadius: 8,
+            background: "var(--accent-grad)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            fontWeight: 800, color: "#0b0d12", fontSize: 12,
+            boxShadow: "0 2px 8px rgba(124,156,255,0.3)",
+            fontFamily: "var(--mono)",
+          }}>{"</>"}</div>
+          <strong style={{ fontSize: 15, letterSpacing: "-0.01em" }}>Code Sandbox</strong>
+        </div>
+
+        <select value={language} onChange={(e) => changeLang(e.target.value)}>
+          {Object.keys(STARTERS).map((l) => <option key={l} value={l}>{LANG_LABEL[l]}</option>)}
         </select>
-        <button onClick={run} disabled={busy} style={{ ...ctrl, background: "#0e639c", borderColor: "#1177bb", cursor: "pointer" }}>
-          {busy ? "Running…" : "▶ Run (Ctrl+Enter)"}
+
+        <button className="btn-primary" onClick={run} disabled={busy} style={{ padding: "6px 14px", borderRadius: 6, cursor: "pointer" }}>
+          {busy ? "Running…" : "▶  Run"}
+          <span style={{ marginLeft: 8, opacity: 0.6, fontSize: 11, fontWeight: 500 }}>⌘↵</span>
         </button>
-        <button onClick={() => setLines([])} style={{ ...ctrl, cursor: "pointer" }}>Clear output</button>
+
+        <button className="btn" onClick={() => setLines([])}>Clear</button>
+
         <button
+          className="btn"
           onClick={explain}
           disabled={!hasError || explaining}
           title={hasError ? "Ask AI to explain the error" : "Run code that errors to enable"}
-          style={{ ...ctrl, background: hasError ? "#8b3a3a" : "#333", borderColor: hasError ? "#b04a4a" : "#444", cursor: hasError ? "pointer" : "not-allowed" }}
+          style={hasError ? { background: "linear-gradient(135deg, rgba(248,113,113,0.18), rgba(167,139,250,0.18))", borderColor: "rgba(248,113,113,0.4)" } : undefined}
         >
-          {explaining ? "Thinking…" : "✨ Explain error (AI)"}
+          {explaining ? "Thinking…" : "✨ Explain error"}
         </button>
+
         <span style={{ flex: 1 }} />
-        <span style={{ color: "#9c9" }}>{busy ? "running…" : "ready"}</span>
+
+        <span className="pill">
+          <span className={`dot ${busy ? "busy" : "live"}`} />
+          {busy ? "running" : "ready"}
+        </span>
       </header>
 
-      <main style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr", minHeight: 0 }}>
-        <div style={{ minHeight: 0, borderRight: "1px solid #333" }}>
-          <Editor
-            height="100%"
-            language={MONACO_LANG[language]}
-            value={code}
-            onChange={(v) => setCode(v ?? "")}
-            theme="vs-dark"
-            options={{ fontSize: 14, minimap: { enabled: false }, automaticLayout: true }}
-          />
+      <main style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr", minHeight: 0, gap: 1, background: "var(--border)" }}>
+        <div style={{ minHeight: 0, background: "var(--panel)", display: "flex", flexDirection: "column" }}>
+          <div style={{ padding: "8px 14px", fontSize: 11, color: "var(--text-faint)", textTransform: "uppercase", letterSpacing: "0.08em", borderBottom: "1px solid var(--border)" }}>
+            Editor · {LANG_LABEL[language]}
+          </div>
+          <div style={{ flex: 1, minHeight: 0 }}>
+            <Editor
+              height="100%"
+              language={MONACO_LANG[language]}
+              value={code}
+              onChange={(v) => setCode(v ?? "")}
+              theme="vs-dark"
+              options={{
+                fontSize: 14,
+                minimap: { enabled: false },
+                automaticLayout: true,
+                fontFamily: "ui-monospace, 'JetBrains Mono', Menlo, monospace",
+                fontLigatures: true,
+                padding: { top: 12, bottom: 12 },
+                scrollBeyondLastLine: false,
+                smoothScrolling: true,
+                cursorBlinking: "smooth",
+                renderLineHighlight: "gutter",
+              }}
+            />
+          </div>
         </div>
-        <div style={{ display: "grid", gridTemplateRows: "1fr auto auto", minHeight: 0 }}>
-          <div style={{ padding: "10px 12px", overflow: "auto", whiteSpace: "pre-wrap", fontFamily: "ui-monospace, Menlo, Consolas, monospace", background: "#111" }}>
-            {lines.map((l, i) => (
-              <span key={i} style={{ color: l.kind === "err" ? "#f48771" : l.kind === "meta" ? "#8a8a8a" : undefined }}>{l.text}</span>
-            ))}
+
+        <div style={{ display: "grid", gridTemplateRows: "1fr auto auto", minHeight: 0, background: "var(--panel)" }}>
+          <div style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
+            <div style={{ padding: "8px 14px", fontSize: 11, color: "var(--text-faint)", textTransform: "uppercase", letterSpacing: "0.08em", borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between" }}>
+              <span>Output</span>
+              {lastRun && <span style={{ color: lastRun.code === 0 ? "var(--ok)" : "var(--err)" }}>exit {lastRun.code}</span>}
+            </div>
+            <div ref={outRef} style={{
+              flex: 1,
+              padding: "12px 14px",
+              overflow: "auto",
+              whiteSpace: "pre-wrap",
+              fontFamily: "var(--mono)",
+              fontSize: 13,
+              lineHeight: 1.55,
+              background: "#0a0c11",
+            }}>
+              {lines.map((l, i) => (
+                <span key={i} style={{
+                  color: l.kind === "err" ? "var(--err)" : l.kind === "meta" ? "var(--text-faint)" : "var(--text)",
+                  fontStyle: l.kind === "meta" ? "italic" : "normal",
+                }}>{l.text}</span>
+              ))}
+            </div>
           </div>
-          <div style={{ display: "flex", flexDirection: "column", padding: 8, background: "#252526", borderTop: "1px solid #333" }}>
-            <label style={{ color: "#888", fontSize: 12, marginBottom: 4 }}>stdin (optional)</label>
+
+          <div style={{ display: "flex", flexDirection: "column", padding: "10px 14px", borderTop: "1px solid var(--border)", background: "var(--bg-elev)" }}>
+            <label style={{ color: "var(--text-faint)", fontSize: 11, marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.08em" }}>stdin</label>
             <textarea value={stdin} onChange={(e) => setStdin(e.target.value)} spellCheck={false}
-              style={{ background: "#1e1e1e", color: "#eee", border: "1px solid #444", padding: "6px 10px", borderRadius: 4, fontFamily: "ui-monospace, Menlo, Consolas, monospace", minHeight: 48, resize: "vertical" }} />
+              placeholder="optional input piped to the program"
+              style={{ fontFamily: "var(--mono)", fontSize: 13, minHeight: 44, resize: "vertical" }} />
           </div>
+
           <form
             onSubmit={(e) => { e.preventDefault(); const v = cmd.trim(); if (v) { setCmd(""); exec(v); } }}
-            style={{ display: "flex", gap: 6, padding: 8, background: "#252526", borderTop: "1px solid #333" }}
+            style={{ display: "flex", gap: 8, padding: "10px 14px", borderTop: "1px solid var(--border)", background: "var(--bg-elev)", alignItems: "center" }}
           >
+            <span style={{ color: "var(--accent)", fontFamily: "var(--mono)", fontWeight: 600 }}>$</span>
             <input value={cmd} onChange={(e) => setCmd(e.target.value)} autoComplete="off"
-              placeholder="$ shell command in session workdir (e.g. ls, pip install requests)"
-              style={{ flex: 1, background: "#1e1e1e", color: "#eee", border: "1px solid #444", padding: "6px 10px", borderRadius: 4, fontFamily: "ui-monospace, Menlo, Consolas, monospace" }} />
-            <button type="submit" style={{ ...ctrl, cursor: "pointer" }}>Exec</button>
+              placeholder="shell command (e.g. ls, pip install requests)"
+              style={{ flex: 1, fontFamily: "var(--mono)", fontSize: 13 }} />
+            <button type="submit" className="btn">Exec</button>
           </form>
         </div>
       </main>
 
-      <footer style={{ padding: "4px 10px", background: "#007acc", color: "white", fontSize: 12, display: "flex", justifyContent: "space-between" }}>
-        <span>workdir: {cwd}</span>
+      <footer style={{
+        padding: "6px 18px",
+        fontSize: 11.5,
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
+        color: "var(--text-dim)",
+        background: "var(--bg-elev)",
+        borderTop: "1px solid var(--border)",
+        fontFamily: "var(--mono)",
+      }}>
+        <span>📁 {cwd}</span>
         <span>session: {sessionId.slice(0, 8) || "—"}</span>
       </footer>
     </div>
   );
 }
-
-const ctrl: React.CSSProperties = { background: "#333", color: "#eee", border: "1px solid #444", padding: "6px 10px", borderRadius: 4, font: "inherit" };
