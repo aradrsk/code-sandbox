@@ -8,6 +8,39 @@ const STARTER = "print('hello from python')\n";
 
 type OutLine = { text: string; kind: "out" | "err" | "meta" };
 
+function cleanPyodideTraceback(raw: string): string {
+  const lines = raw.split("\n");
+  const out: string[] = [];
+  let i = 0;
+  // Keep the first "Traceback" header if present
+  if (lines[0]?.startsWith("Traceback")) { out.push(lines[0]); i = 1; }
+  while (i < lines.length) {
+    const line = lines[i];
+    const next = lines[i + 1] ?? "";
+    const isFrame = /^\s*File "/.test(line);
+    if (isFrame) {
+      const isInternal =
+        /\/lib\/python[\d.]*\.zip\//.test(line) ||
+        /_pyodide\/_base\.py/.test(line) ||
+        /pyodide\.asm\./.test(line) ||
+        /"<exec>"/.test(line);
+      if (isInternal) {
+        // skip this "File ..." line and the indented source line that follows
+        i += 1;
+        if (/^\s{4}/.test(next)) i += 1;
+        // skip caret-indicator line if any
+        if (/^\s*\^+\s*$/.test(lines[i] ?? "")) i += 1;
+        continue;
+      }
+    }
+    // Rewrite "<exec>" references to "your code" for clarity
+    out.push(line.replace(/"<exec>"/g, '"your code"'));
+    i += 1;
+  }
+  // Collapse consecutive blank lines
+  return out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
 declare global {
   interface Window {
     loadPyodide?: (opts?: any) => Promise<any>;
@@ -99,9 +132,10 @@ export default function Page() {
     } catch (e: any) {
       setLines([]);
       if (stdout) append(stdout, "out");
-      const msg = e?.message ?? String(e);
-      stderr += msg;
-      append(msg + "\n", "err");
+      const raw = e?.message ?? String(e);
+      const cleaned = cleanPyodideTraceback(raw);
+      stderr += cleaned;
+      append(cleaned + "\n", "err");
       append(`\n[exit 1]\n`, "meta");
       setLastRun({ stdout, stderr, code: 1 });
     } finally {
