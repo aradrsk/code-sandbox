@@ -229,6 +229,78 @@ export default function Page() {
   const [awaitingStdin, setAwaitingStdin] = useState(false);
   const [stdinLive, setStdinLive] = useState("");
   const [errorLine, setErrorLine] = useState<number | null>(null);
+  const [modal, setModal] = useState<null | {
+    kind: "prompt" | "confirm";
+    title: string;
+    description?: string;
+    value?: string;
+    placeholder?: string;
+    okLabel?: string;
+    okDanger?: boolean;
+    onOk: (value: string) => void;
+    validate?: (value: string) => string | null;
+  }>(null);
+  const [modalInput, setModalInput] = useState("");
+  const [modalError, setModalError] = useState("");
+  const modalInputRef = useRef<HTMLInputElement>(null);
+
+  function askPrompt(opts: {
+    title: string;
+    description?: string;
+    defaultValue?: string;
+    placeholder?: string;
+    okLabel?: string;
+    validate?: (v: string) => string | null;
+    onOk: (value: string) => void;
+  }) {
+    setModalInput(opts.defaultValue ?? "");
+    setModalError("");
+    setModal({
+      kind: "prompt",
+      title: opts.title,
+      description: opts.description,
+      value: opts.defaultValue,
+      placeholder: opts.placeholder,
+      okLabel: opts.okLabel,
+      onOk: opts.onOk,
+      validate: opts.validate,
+    });
+    setTimeout(() => modalInputRef.current?.select(), 40);
+  }
+
+  function askConfirm(opts: {
+    title: string;
+    description?: string;
+    okLabel?: string;
+    okDanger?: boolean;
+    onOk: () => void;
+  }) {
+    setModalError("");
+    setModal({
+      kind: "confirm",
+      title: opts.title,
+      description: opts.description,
+      okLabel: opts.okLabel,
+      okDanger: opts.okDanger,
+      onOk: () => opts.onOk(),
+    });
+  }
+
+  function submitModal() {
+    if (!modal) return;
+    if (modal.kind === "prompt") {
+      const v = modalInput;
+      if (modal.validate) {
+        const err = modal.validate(v);
+        if (err) { setModalError(err); return; }
+      }
+      setModal(null);
+      modal.onOk(v);
+    } else {
+      setModal(null);
+      modal.onOk("");
+    }
+  }
   const editorRef = useRef<any>(null);
   const monacoRef = useRef<any>(null);
   const stdinQueueRef = useRef<string[]>([]);
@@ -415,7 +487,7 @@ export default function Page() {
       if (mod && e.key === "Enter") { e.preventDefault(); run(); }
       else if (mod && e.key.toLowerCase() === "s") { e.preventDefault(); downloadFile(); }
       else if (mod && e.key === "/") { e.preventDefault(); setShowShortcuts((s) => !s); }
-      else if (e.key === "Escape") { setShowShortcuts(false); setShowExamples(false); setAiOpen(false); }
+      else if (e.key === "Escape") { setShowShortcuts(false); setShowExamples(false); setAiOpen(false); setModal(null); }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
@@ -506,10 +578,16 @@ export default function Page() {
   }
 
   function resetCode() {
-    if (confirm(`Reset ${activeFile} to starter code? (current content will be lost)`)) {
-      setCode(STARTER);
-      showToast("Reset to starter");
-    }
+    askConfirm({
+      title: `Reset ${activeFile}?`,
+      description: "Current content will be lost. This can't be undone.",
+      okLabel: "Reset",
+      okDanger: true,
+      onOk: () => {
+        setCode(STARTER);
+        showToast("Reset to starter");
+      },
+    });
   }
 
   async function installPackages() {
@@ -832,16 +910,27 @@ export default function Page() {
                     userSelect: "none",
                   }}
                   onDoubleClick={() => {
-                    const next = prompt("Rename file:", name);
-                    if (!next || next === name) return;
-                    if (!/\.py$/.test(next)) { showToast("File name must end in .py"); return; }
-                    if (files[next]) { showToast("A file with that name already exists"); return; }
-                    setFiles((f) => {
-                      const out: Files = {};
-                      for (const k of Object.keys(f)) out[k === name ? next : k] = f[k];
-                      return out;
+                    askPrompt({
+                      title: "Rename file",
+                      defaultValue: name,
+                      placeholder: "new_name.py",
+                      okLabel: "Rename",
+                      validate: (v) => {
+                        if (!v.trim()) return "Name can't be empty";
+                        if (!/\.py$/.test(v)) return "File name must end in .py";
+                        if (v !== name && files[v]) return "A file with that name already exists";
+                        return null;
+                      },
+                      onOk: (next) => {
+                        if (next === name) return;
+                        setFiles((f) => {
+                          const out: Files = {};
+                          for (const k of Object.keys(f)) out[k === name ? next : k] = f[k];
+                          return out;
+                        });
+                        if (activeFile === name) setActiveFile(next);
+                      },
                     });
-                    if (activeFile === name) setActiveFile(next);
                   }}
                   title="Click to open · Double-click to rename"
                 >
@@ -851,15 +940,22 @@ export default function Page() {
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
-                        if (!confirm(`Delete ${name}?`)) return;
-                        setFiles((f) => {
-                          const { [name]: _, ...rest } = f;
-                          return rest;
+                        askConfirm({
+                          title: `Delete ${name}?`,
+                          description: "This can't be undone.",
+                          okLabel: "Delete",
+                          okDanger: true,
+                          onOk: () => {
+                            setFiles((f) => {
+                              const { [name]: _, ...rest } = f;
+                              return rest;
+                            });
+                            if (activeFile === name) {
+                              const remaining = Object.keys(files).filter((k) => k !== name);
+                              setActiveFile(remaining[0]);
+                            }
+                          },
                         });
-                        if (activeFile === name) {
-                          const remaining = Object.keys(files).filter((k) => k !== name);
-                          setActiveFile(remaining[0]);
-                        }
                       }}
                       title="Close file"
                       style={{
@@ -880,12 +976,22 @@ export default function Page() {
                   let n = 1;
                   let name = `file${n}.py`;
                   while (files[name]) { n++; name = `file${n}.py`; }
-                  const real = prompt("New file name:", name);
-                  if (!real) return;
-                  if (!/\.py$/.test(real)) { showToast("File name must end in .py"); return; }
-                  if (files[real]) { showToast("A file with that name already exists"); return; }
-                  setFiles((f) => ({ ...f, [real]: "" }));
-                  setActiveFile(real);
+                  askPrompt({
+                    title: "New file",
+                    defaultValue: name,
+                    placeholder: "name.py",
+                    okLabel: "Create",
+                    validate: (v) => {
+                      if (!v.trim()) return "Name can't be empty";
+                      if (!/\.py$/.test(v)) return "File name must end in .py";
+                      if (files[v]) return "A file with that name already exists";
+                      return null;
+                    },
+                    onOk: (real) => {
+                      setFiles((f) => ({ ...f, [real]: "" }));
+                      setActiveFile(real);
+                    },
+                  });
                 }}
                 title="New file"
                 style={{
@@ -1191,6 +1297,73 @@ export default function Page() {
           </button>
         </form>
       </aside>
+
+      {modal && (
+        <>
+          <div
+            onClick={() => setModal(null)}
+            style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 60, backdropFilter: "blur(4px)" }}
+          />
+          <form
+            onSubmit={(e) => { e.preventDefault(); submitModal(); }}
+            style={{
+              position: "fixed",
+              top: "40%", left: "50%",
+              transform: "translate(-50%, -50%)",
+              background: "var(--panel)",
+              border: "1px solid var(--border-strong)",
+              borderRadius: 14,
+              padding: 22,
+              minWidth: 360,
+              maxWidth: "90vw",
+              boxShadow: "0 40px 80px -20px rgba(0,0,0,0.6)",
+              zIndex: 61,
+              animation: "fadeInUp 0.18s ease",
+            }}
+          >
+            <div style={{ fontSize: 15, fontWeight: 650, marginBottom: modal.description ? 6 : 14, letterSpacing: "-0.01em" }}>
+              {modal.title}
+            </div>
+            {modal.description && (
+              <div style={{ fontSize: 13, color: "var(--text-dim)", marginBottom: 14, lineHeight: 1.5 }}>
+                {modal.description}
+              </div>
+            )}
+            {modal.kind === "prompt" && (
+              <>
+                <input
+                  ref={modalInputRef}
+                  value={modalInput}
+                  onChange={(e) => { setModalInput(e.target.value); if (modalError) setModalError(""); }}
+                  placeholder={modal.placeholder}
+                  autoFocus
+                  style={{ width: "100%", fontSize: 14, fontFamily: "var(--mono)" }}
+                />
+                {modalError && (
+                  <div style={{ color: "var(--err)", fontSize: 12, marginTop: 8 }}>{modalError}</div>
+                )}
+              </>
+            )}
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 18 }}>
+              <button type="button" className="btn-ghost" onClick={() => setModal(null)}>
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className={modal.okDanger ? "btn" : "btn-primary"}
+                style={modal.okDanger ? {
+                  background: "linear-gradient(135deg, #f87171, #ef4444)",
+                  color: "#fff",
+                  border: "none",
+                  fontWeight: 600,
+                } : undefined}
+              >
+                {modal.okLabel ?? "OK"}
+              </button>
+            </div>
+          </form>
+        </>
+      )}
 
       {showShortcuts && (
         <>
