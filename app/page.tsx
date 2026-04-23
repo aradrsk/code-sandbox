@@ -104,7 +104,10 @@ function PythonLogo({ size = 24 }: { size?: number }) {
   );
 }
 
+type Theme = "dark" | "light";
+
 export default function Page() {
+  const [theme, setTheme] = useState<Theme>("dark");
   const [code, setCode] = useState(STARTER);
   const [stdin, setStdin] = useState("");
   const [busy, setBusy] = useState(false);
@@ -119,6 +122,17 @@ export default function Page() {
   const codeRef = useRef(code); codeRef.current = code;
   const stdinRef = useRef(stdin); stdinRef.current = stdin;
   const outRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const saved = (typeof window !== "undefined" && localStorage.getItem("theme")) as Theme | null;
+    const initial: Theme = saved ?? (window.matchMedia?.("(prefers-color-scheme: light)").matches ? "light" : "dark");
+    setTheme(initial);
+  }, []);
+
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+    try { localStorage.setItem("theme", theme); } catch {}
+  }, [theme]);
 
   useEffect(() => {
     let cancelled = false;
@@ -242,7 +256,7 @@ export default function Page() {
         display: "flex",
         gap: 12,
         alignItems: "center",
-        background: "rgba(7, 9, 15, 0.6)",
+        background: theme === "dark" ? "rgba(7, 9, 15, 0.6)" : "rgba(255, 255, 255, 0.7)",
         backdropFilter: "blur(16px)",
         WebkitBackdropFilter: "blur(16px)",
         borderBottom: "1px solid var(--border)",
@@ -332,6 +346,19 @@ export default function Page() {
 
         <span style={{ flex: 1 }} />
 
+        <button
+          className="theme-toggle"
+          onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
+          title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
+          aria-label="Toggle theme"
+        >
+          {theme === "dark" ? (
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+          ) : (
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+          )}
+        </button>
+
         <a href="https://github.com/aradrsk/code-sandbox" target="_blank" rel="noreferrer" className="btn-ghost" style={{ textDecoration: "none" }}>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 .5C5.73.5.5 5.73.5 12c0 5.08 3.29 9.39 7.86 10.91.58.11.79-.25.79-.56v-2c-3.2.7-3.88-1.37-3.88-1.37-.52-1.33-1.27-1.69-1.27-1.69-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.18 1.76 1.18 1.02 1.76 2.68 1.25 3.34.96.1-.74.4-1.25.72-1.53-2.56-.29-5.25-1.28-5.25-5.7 0-1.26.45-2.29 1.19-3.1-.12-.29-.52-1.47.11-3.06 0 0 .97-.31 3.18 1.18.92-.26 1.9-.39 2.88-.39s1.96.13 2.88.39c2.21-1.49 3.18-1.18 3.18-1.18.63 1.59.23 2.77.11 3.06.74.81 1.19 1.84 1.19 3.1 0 4.43-2.69 5.41-5.26 5.69.41.35.77 1.05.77 2.12v3.15c0 .31.21.67.8.56C20.21 21.39 23.5 17.08 23.5 12 23.5 5.73 18.27.5 12 .5z"/></svg>
         </a>
@@ -363,7 +390,7 @@ export default function Page() {
               language="python"
               value={code}
               onChange={(v) => setCode(v ?? "")}
-              theme="vs-dark"
+              theme={theme === "dark" ? "vs-dark" : "vs"}
               options={{
                 fontSize: 14,
                 minimap: { enabled: false },
@@ -409,7 +436,7 @@ export default function Page() {
               fontFamily: "var(--mono)",
               fontSize: 13,
               lineHeight: 1.6,
-              background: "#060910",
+              background: "var(--output-bg)",
             }}>
               {lines.map((l, i) => (
                 <span key={i} style={{
