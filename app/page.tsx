@@ -4,7 +4,48 @@ import dynamic from "next/dynamic";
 
 const Editor = dynamic(() => import("@monaco-editor/react"), { ssr: false });
 
-const STARTER = "print('hello from python')\n";
+const STARTER = `# Welcome to Python Sandbox
+# Runs entirely in your browser via Pyodide — no server needed.
+
+def greet(name: str) -> str:
+    return f"Hello, {name}!"
+
+print(greet("World"))
+`;
+
+const EXAMPLES: Array<{ name: string; code: string }> = [
+  {
+    name: "Hello world",
+    code: "print('Hello, World!')\n",
+  },
+  {
+    name: "Fibonacci",
+    code: `def fib(n):
+    a, b = 0, 1
+    for _ in range(n):
+        yield a
+        a, b = b, a + b
+
+print(list(fib(10)))
+`,
+  },
+  {
+    name: "NumPy matrix",
+    code: `import numpy as np
+
+m = np.arange(9).reshape(3, 3)
+print(m)
+print("sum:", m.sum())
+print("mean:", m.mean())
+`,
+  },
+  {
+    name: "input() demo",
+    code: `name = input("Your name? ")
+print(f"Nice to meet you, {name}!")
+`,
+  },
+];
 
 type OutLine = { text: string; kind: "out" | "err" | "meta" };
 
@@ -12,7 +53,6 @@ function cleanPyodideTraceback(raw: string): string {
   const lines = raw.split("\n");
   const out: string[] = [];
   let i = 0;
-  // Keep the first "Traceback" header if present
   if (lines[0]?.startsWith("Traceback")) { out.push(lines[0]); i = 1; }
   while (i < lines.length) {
     const line = lines[i];
@@ -25,31 +65,44 @@ function cleanPyodideTraceback(raw: string): string {
         /pyodide\.asm\./.test(line) ||
         /"<exec>"/.test(line);
       if (isInternal) {
-        // skip this "File ..." line and the indented source line that follows
         i += 1;
         if (/^\s{4}/.test(next)) i += 1;
-        // skip caret-indicator line if any
         if (/^\s*\^+\s*$/.test(lines[i] ?? "")) i += 1;
         continue;
       }
     }
-    // Rewrite "<exec>" references to "your code" for clarity
     out.push(line.replace(/"<exec>"/g, '"your code"'));
     i += 1;
   }
-  // Collapse consecutive blank lines
   return out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
 declare global {
-  interface Window {
-    loadPyodide?: (opts?: any) => Promise<any>;
-  }
+  interface Window { loadPyodide?: (opts?: any) => Promise<any>; }
 }
 
 const PYODIDE_VERSION = "0.26.2";
 const PYODIDE_URL = `https://cdn.jsdelivr.net/pyodide/v${PYODIDE_VERSION}/full/pyodide.js`;
 const PYODIDE_INDEX = `https://cdn.jsdelivr.net/pyodide/v${PYODIDE_VERSION}/full/`;
+
+function PythonLogo({ size = 24 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 111 110" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <linearGradient id="py-blue" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stopColor="#5A9FD4" />
+          <stop offset="100%" stopColor="#306998" />
+        </linearGradient>
+        <linearGradient id="py-yellow" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stopColor="#FFE873" />
+          <stop offset="100%" stopColor="#FFC331" />
+        </linearGradient>
+      </defs>
+      <path fill="url(#py-blue)" d="M54.9.5c-4.6 0-9 .4-12.9 1.1-11.4 2-13.5 6.3-13.5 14v10.1h27v3.4H18.3c-7.8 0-14.6 4.7-16.7 13.5-2.5 10.2-2.6 16.5 0 27.1 1.9 7.9 6.4 13.5 14.2 13.5h9.3V70.1c0-8.8 7.7-16.7 16.7-16.7h27c7.5 0 13.5-6.2 13.5-13.7V15.6c0-7.3-6.2-12.8-13.5-14C63.8.9 59.4.5 54.9.5zM40.2 8.8c2.8 0 5.1 2.3 5.1 5.1s-2.3 5.1-5.1 5.1-5.1-2.3-5.1-5.1 2.3-5.1 5.1-5.1z"/>
+      <path fill="url(#py-yellow)" d="M85.6 28.7v12.5c0 9.2-7.8 16.9-16.7 16.9h-27c-7.4 0-13.5 6.3-13.5 13.7v25.7c0 7.3 6.4 11.6 13.5 13.7 8.5 2.5 16.7 3 27 0 6.8-2 13.5-5.9 13.5-13.7V87.3H55.4v-3.4h40.3c7.8 0 10.7-5.5 13.5-13.5 2.8-8.3 2.7-16.3 0-27.1-1.9-7.7-5.7-13.5-13.5-13.5h-9.3zM70.3 91.2c2.8 0 5.1 2.3 5.1 5.1s-2.3 5.1-5.1 5.1-5.1-2.3-5.1-5.1 2.3-5.1 5.1-5.1z"/>
+    </svg>
+  );
+}
 
 export default function Page() {
   const [code, setCode] = useState(STARTER);
@@ -57,8 +110,11 @@ export default function Page() {
   const [busy, setBusy] = useState(false);
   const [explaining, setExplaining] = useState(false);
   const [pyStatus, setPyStatus] = useState<"loading" | "ready" | "error">("loading");
-  const [lastRun, setLastRun] = useState<{ stdout: string; stderr: string; code: number } | null>(null);
-  const [lines, setLines] = useState<OutLine[]>([{ text: "Loading Python runtime (Pyodide)…", kind: "meta" }]);
+  const [pyVersion, setPyVersion] = useState<string>("");
+  const [loadProgress, setLoadProgress] = useState<string>("");
+  const [lastRun, setLastRun] = useState<{ stdout: string; stderr: string; code: number; durationMs: number } | null>(null);
+  const [lines, setLines] = useState<OutLine[]>([{ text: "Loading Python runtime…", kind: "meta" }]);
+  const [showExamples, setShowExamples] = useState(false);
   const pyodideRef = useRef<any>(null);
   const codeRef = useRef(code); codeRef.current = code;
   const stdinRef = useRef(stdin); stdinRef.current = stdin;
@@ -68,6 +124,7 @@ export default function Page() {
     let cancelled = false;
     (async () => {
       try {
+        setLoadProgress("downloading runtime");
         if (!window.loadPyodide) {
           await new Promise<void>((resolve, reject) => {
             const s = document.createElement("script");
@@ -77,11 +134,14 @@ export default function Page() {
             document.head.appendChild(s);
           });
         }
+        setLoadProgress("initializing interpreter");
         const py = await window.loadPyodide!({ indexURL: PYODIDE_INDEX });
         if (cancelled) return;
+        const version = py.runPython("import sys; sys.version.split()[0]");
         pyodideRef.current = py;
+        setPyVersion(version);
         setPyStatus("ready");
-        setLines([{ text: `Python ${py.runPython("import sys; sys.version.split()[0]")} ready. Press Ctrl+Enter to run.`, kind: "meta" }]);
+        setLines([{ text: `Python ${version} ready. Press `, kind: "meta" }, { text: "Ctrl+Enter", kind: "out" }, { text: " to run your code.", kind: "meta" }]);
       } catch (e: any) {
         if (cancelled) return;
         setPyStatus("error");
@@ -111,33 +171,35 @@ export default function Page() {
     const py = pyodideRef.current;
     if (!py || pyStatus !== "ready") return;
     setBusy(true);
+    const started = performance.now();
     let stdout = "";
     let stderr = "";
     try {
       py.setStdout({ batched: (s: string) => { stdout += s + "\n"; } });
       py.setStderr({ batched: (s: string) => { stderr += s + "\n"; } });
       if (stdinRef.current) {
-        const lines = stdinRef.current.split("\n");
+        const inputLines = stdinRef.current.split("\n");
         let i = 0;
-        py.setStdin({ stdin: () => (i < lines.length ? lines[i++] : null) });
+        py.setStdin({ stdin: () => (i < inputLines.length ? inputLines[i++] : null) });
       } else {
         py.setStdin({ stdin: () => null });
       }
       await py.loadPackagesFromImports(codeRef.current);
       await py.runPythonAsync(codeRef.current);
+      const duration = Math.round(performance.now() - started);
       setLines([]);
       if (stdout) append(stdout, "out");
-      append(`\n[exit 0]\n`, "meta");
-      setLastRun({ stdout, stderr: "", code: 0 });
+      append(`\n✓ Ran successfully in ${duration}ms\n`, "meta");
+      setLastRun({ stdout, stderr: "", code: 0, durationMs: duration });
     } catch (e: any) {
+      const duration = Math.round(performance.now() - started);
       setLines([]);
       if (stdout) append(stdout, "out");
-      const raw = e?.message ?? String(e);
-      const cleaned = cleanPyodideTraceback(raw);
+      const cleaned = cleanPyodideTraceback(e?.message ?? String(e));
       stderr += cleaned;
       append(cleaned + "\n", "err");
-      append(`\n[exit 1]\n`, "meta");
-      setLastRun({ stdout, stderr, code: 1 });
+      append(`\n✗ Errored after ${duration}ms\n`, "meta");
+      setLastRun({ stdout, stderr, code: 1, durationMs: duration });
     } finally {
       setBusy(false);
     }
@@ -146,7 +208,7 @@ export default function Page() {
   async function explain() {
     if (!lastRun) return;
     setExplaining(true);
-    append(`\n✨ Asking AI to explain the error...\n`, "meta");
+    append(`\n✨ Asking AI to explain...\n`, "meta");
     try {
       const r = await fetch("/api/explain", {
         method: "POST",
@@ -170,54 +232,109 @@ export default function Page() {
   }
 
   const hasError = !!lastRun && (lastRun.code !== 0 || !!lastRun.stderr);
-  const statusLabel = pyStatus === "loading" ? "loading python" : pyStatus === "error" ? "error" : busy ? "running" : "ready";
+  const statusLabel = pyStatus === "loading" ? loadProgress || "loading" : pyStatus === "error" ? "error" : busy ? "running" : "ready";
   const statusDot = pyStatus === "loading" ? "busy" : pyStatus === "error" ? "err" : busy ? "busy" : "live";
 
   return (
-    <div style={{ position: "relative", display: "grid", gridTemplateRows: "auto 1fr auto", height: "100vh", zIndex: 1 }}>
+    <div style={{ position: "relative", display: "grid", gridTemplateRows: "auto 1fr", height: "100vh", zIndex: 1 }}>
       <header style={{
-        padding: "12px 18px",
+        padding: "14px 22px",
         display: "flex",
-        gap: 10,
+        gap: 12,
         alignItems: "center",
-        background: "rgba(15, 18, 24, 0.7)",
-        backdropFilter: "blur(12px)",
+        background: "rgba(7, 9, 15, 0.6)",
+        backdropFilter: "blur(16px)",
+        WebkitBackdropFilter: "blur(16px)",
         borderBottom: "1px solid var(--border)",
+        position: "relative",
+        zIndex: 10,
       }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10, marginRight: 8 }}>
-          <div style={{
-            width: 28, height: 28, borderRadius: 8,
-            background: "var(--accent-grad)",
-            display: "flex", alignItems: "center", justifyContent: "center",
-            fontWeight: 800, color: "#0b0d12", fontSize: 14,
-            boxShadow: "0 2px 8px rgba(124,156,255,0.3)",
-          }}>🐍</div>
-          <strong style={{ fontSize: 15, letterSpacing: "-0.01em" }}>Python Sandbox</strong>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginRight: 4 }}>
+          <div style={{ position: "relative", display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <div style={{
+              position: "absolute", inset: -6, borderRadius: "50%",
+              background: "radial-gradient(circle, rgba(255, 212, 59, 0.25), transparent 70%)",
+              filter: "blur(8px)",
+            }} />
+            <PythonLogo size={30} />
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", lineHeight: 1.15 }}>
+            <strong style={{ fontSize: 15, letterSpacing: "-0.015em", fontWeight: 650 }}>Python Sandbox</strong>
+            <span style={{ fontSize: 11, color: "var(--text-faint)", fontFamily: "var(--mono)" }}>
+              {pyVersion ? `v${pyVersion} · in-browser` : "loading…"}
+            </span>
+          </div>
         </div>
+
+        <span style={{ width: 1, height: 24, background: "var(--border)", margin: "0 6px" }} />
 
         <button
           className="btn-primary"
           onClick={run}
           disabled={busy || pyStatus !== "ready"}
-          style={{ padding: "6px 14px", borderRadius: 6, cursor: "pointer" }}
         >
-          {busy ? "Running…" : "▶  Run"}
-          <span style={{ marginLeft: 8, opacity: 0.6, fontSize: 11, fontWeight: 500 }}>⌘↵</span>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+          {busy ? "Running…" : "Run"}
+          <span className="kbd">⌘↵</span>
         </button>
 
-        <button className="btn" onClick={() => setLines([])}>Clear</button>
+        <div style={{ position: "relative" }}>
+          <button className="btn" onClick={() => setShowExamples((s) => !s)}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+            Examples
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.6 }}><polyline points="6 9 12 15 18 9"/></svg>
+          </button>
+          {showExamples && (
+            <>
+              <div onClick={() => setShowExamples(false)} style={{ position: "fixed", inset: 0, zIndex: 20 }} />
+              <div style={{
+                position: "absolute",
+                top: "calc(100% + 6px)",
+                left: 0,
+                background: "var(--panel-2)",
+                border: "1px solid var(--border-strong)",
+                borderRadius: 10,
+                minWidth: 200,
+                padding: 6,
+                boxShadow: "0 20px 40px -10px rgba(0,0,0,0.6)",
+                animation: "fadeInUp 0.15s ease",
+                zIndex: 21,
+              }}>
+                {EXAMPLES.map((ex) => (
+                  <button
+                    key={ex.name}
+                    onClick={() => { setCode(ex.code); setShowExamples(false); }}
+                    style={{
+                      display: "block", width: "100%", textAlign: "left",
+                      padding: "8px 12px", background: "transparent", border: "none",
+                      borderRadius: 6, color: "var(--text)", cursor: "pointer",
+                      fontSize: 13,
+                    }}
+                    onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(255,255,255,0.06)")}
+                    onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                  >
+                    {ex.name}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
 
-        <button
-          className="btn"
-          onClick={explain}
-          disabled={!hasError || explaining}
-          title={hasError ? "Ask AI to explain the error" : "Run code that errors to enable"}
-          style={hasError ? { background: "linear-gradient(135deg, rgba(248,113,113,0.18), rgba(167,139,250,0.18))", borderColor: "rgba(248,113,113,0.4)" } : undefined}
-        >
-          {explaining ? "Thinking…" : "✨ Explain error"}
-        </button>
+        <button className="btn-ghost" onClick={() => setLines([])}>Clear output</button>
+
+        {hasError && (
+          <button className="btn btn-ai" onClick={explain} disabled={explaining}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2l2.09 6.26L20 10l-4.91 3.74L16.18 20 12 16.54 7.82 20l1.09-6.26L4 10l5.91-1.74z"/></svg>
+            {explaining ? "Thinking…" : "Explain error"}
+          </button>
+        )}
 
         <span style={{ flex: 1 }} />
+
+        <a href="https://github.com/aradrsk/code-sandbox" target="_blank" rel="noreferrer" className="btn-ghost" style={{ textDecoration: "none" }}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 .5C5.73.5.5 5.73.5 12c0 5.08 3.29 9.39 7.86 10.91.58.11.79-.25.79-.56v-2c-3.2.7-3.88-1.37-3.88-1.37-.52-1.33-1.27-1.69-1.27-1.69-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.18 1.76 1.18 1.02 1.76 2.68 1.25 3.34.96.1-.74.4-1.25.72-1.53-2.56-.29-5.25-1.28-5.25-5.7 0-1.26.45-2.29 1.19-3.1-.12-.29-.52-1.47.11-3.06 0 0 .97-.31 3.18 1.18.92-.26 1.9-.39 2.88-.39s1.96.13 2.88.39c2.21-1.49 3.18-1.18 3.18-1.18.63 1.59.23 2.77.11 3.06.74.81 1.19 1.84 1.19 3.1 0 4.43-2.69 5.41-5.26 5.69.41.35.77 1.05.77 2.12v3.15c0 .31.21.67.8.56C20.21 21.39 23.5 17.08 23.5 12 23.5 5.73 18.27.5 12 .5z"/></svg>
+        </a>
 
         <span className="pill">
           <span className={`dot ${statusDot}`} />
@@ -225,10 +342,20 @@ export default function Page() {
         </span>
       </header>
 
-      <main style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr", minHeight: 0, gap: 1, background: "var(--border)" }}>
-        <div style={{ minHeight: 0, background: "var(--panel)", display: "flex", flexDirection: "column" }}>
-          <div style={{ padding: "8px 14px", fontSize: 11, color: "var(--text-faint)", textTransform: "uppercase", letterSpacing: "0.08em", borderBottom: "1px solid var(--border)" }}>
-            Editor · Python
+      <main style={{
+        display: "grid",
+        gridTemplateColumns: "1.5fr 1fr",
+        gap: 14,
+        padding: 14,
+        minHeight: 0,
+      }}>
+        <section className="panel" style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
+          <div className="panel-head">
+            <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+              Editor
+            </span>
+            <span style={{ fontSize: 10.5, fontFamily: "var(--mono)", textTransform: "none", letterSpacing: 0, color: "var(--text-faint)" }}>main.py</span>
           </div>
           <div style={{ flex: 1, minHeight: 0 }}>
             <Editor
@@ -241,33 +368,48 @@ export default function Page() {
                 fontSize: 14,
                 minimap: { enabled: false },
                 automaticLayout: true,
-                fontFamily: "ui-monospace, 'JetBrains Mono', Menlo, monospace",
+                fontFamily: "var(--font-mono), ui-monospace, 'JetBrains Mono', Menlo, monospace",
                 fontLigatures: true,
-                padding: { top: 12, bottom: 12 },
+                padding: { top: 14, bottom: 14 },
                 scrollBeyondLastLine: false,
                 smoothScrolling: true,
                 cursorBlinking: "smooth",
+                cursorSmoothCaretAnimation: "on",
                 renderLineHighlight: "gutter",
+                lineNumbersMinChars: 3,
+                folding: true,
+                bracketPairColorization: { enabled: true },
               }}
             />
           </div>
-        </div>
+        </section>
 
-        <div style={{ display: "grid", gridTemplateRows: "1fr auto", minHeight: 0, background: "var(--panel)" }}>
-          <div style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
-            <div style={{ padding: "8px 14px", fontSize: 11, color: "var(--text-faint)", textTransform: "uppercase", letterSpacing: "0.08em", borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between" }}>
-              <span>Output</span>
-              {lastRun && <span style={{ color: lastRun.code === 0 ? "var(--ok)" : "var(--err)" }}>exit {lastRun.code}</span>}
+        <section style={{ display: "grid", gridTemplateRows: "1fr auto", gap: 14, minHeight: 0 }}>
+          <div className="panel" style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
+            <div className="panel-head">
+              <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+                Output
+              </span>
+              {lastRun && (
+                <span style={{ display: "flex", gap: 10, alignItems: "center", textTransform: "none", letterSpacing: 0, fontFamily: "var(--mono)", fontSize: 11 }}>
+                  <span style={{ color: lastRun.code === 0 ? "var(--ok)" : "var(--err)" }}>
+                    {lastRun.code === 0 ? "✓ success" : "✗ error"}
+                  </span>
+                  <span style={{ color: "var(--text-faint)" }}>·</span>
+                  <span style={{ color: "var(--text-faint)" }}>{lastRun.durationMs}ms</span>
+                </span>
+              )}
             </div>
             <div ref={outRef} style={{
               flex: 1,
-              padding: "12px 14px",
+              padding: "14px 18px",
               overflow: "auto",
               whiteSpace: "pre-wrap",
               fontFamily: "var(--mono)",
               fontSize: 13,
-              lineHeight: 1.55,
-              background: "#0a0c11",
+              lineHeight: 1.6,
+              background: "#060910",
             }}>
               {lines.map((l, i) => (
                 <span key={i} style={{
@@ -278,29 +420,25 @@ export default function Page() {
             </div>
           </div>
 
-          <div style={{ display: "flex", flexDirection: "column", padding: "10px 14px", borderTop: "1px solid var(--border)", background: "var(--bg-elev)" }}>
-            <label style={{ color: "var(--text-faint)", fontSize: 11, marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.08em" }}>stdin</label>
-            <textarea value={stdin} onChange={(e) => setStdin(e.target.value)} spellCheck={false}
-              placeholder="optional input for input() calls — one line per call"
-              style={{ fontFamily: "var(--mono)", fontSize: 13, minHeight: 44, resize: "vertical" }} />
+          <div className="panel" style={{ padding: "12px 16px" }}>
+            <label style={{
+              display: "flex", alignItems: "center", gap: 6,
+              color: "var(--text-faint)", fontSize: 11, marginBottom: 8,
+              textTransform: "uppercase", letterSpacing: "0.09em", fontWeight: 600,
+            }}>
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+              stdin
+            </label>
+            <textarea
+              value={stdin}
+              onChange={(e) => setStdin(e.target.value)}
+              spellCheck={false}
+              placeholder="optional — one line per input() call"
+              style={{ fontFamily: "var(--mono)", fontSize: 13, minHeight: 52, resize: "vertical", width: "100%" }}
+            />
           </div>
-        </div>
+        </section>
       </main>
-
-      <footer style={{
-        padding: "6px 18px",
-        fontSize: 11.5,
-        display: "flex",
-        justifyContent: "space-between",
-        alignItems: "center",
-        color: "var(--text-dim)",
-        background: "var(--bg-elev)",
-        borderTop: "1px solid var(--border)",
-        fontFamily: "var(--mono)",
-      }}>
-        <span>🐍 runs in your browser via Pyodide</span>
-        <span>no server required</span>
-      </footer>
     </div>
   );
 }

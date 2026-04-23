@@ -1,21 +1,26 @@
 :root {
-  --bg: #0b0d12;
-  --bg-elev: #11141b;
-  --bg-elev-2: #161a23;
-  --panel: #0f1218;
-  --border: #232834;
-  --border-strong: #2d3445;
-  --text: #e6e9ef;
-  --text-dim: #8b93a7;
-  --text-faint: #5b6375;
-  --accent: #7c9cff;
+  --bg: #07090f;
+  --bg-1: #0b0f18;
+  --bg-2: #11162180;
+  --bg-3: #161d2d;
+  --panel: #0d121c;
+  --panel-2: #121827;
+  --border: #1e2636;
+  --border-strong: #2a3348;
+  --text: #e8ecf3;
+  --text-dim: #9aa3b8;
+  --text-faint: #5d667c;
+  --accent: #7dd3fc;
   --accent-2: #a78bfa;
-  --accent-grad: linear-gradient(135deg, #7c9cff 0%, #a78bfa 100%);
+  --accent-3: #fbbf24;
+  --accent-grad: linear-gradient(135deg, #7dd3fc 0%, #a78bfa 60%, #f0abfc 100%);
+  --python-blue: #3776ab;
+  --python-yellow: #ffd43b;
   --ok: #4ade80;
   --err: #f87171;
   --warn: #fbbf24;
-  --mono: ui-monospace, "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace;
-  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Inter, sans-serif;
+  --mono: var(--font-mono), ui-monospace, "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace;
+  --sans: var(--font-sans), ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 
 * { box-sizing: border-box; }
@@ -29,6 +34,7 @@ html, body {
   font-family: var(--sans);
   font-size: 14px;
   -webkit-font-smoothing: antialiased;
+  letter-spacing: -0.005em;
 }
 
 body::before {
@@ -36,78 +42,173 @@ body::before {
   position: fixed;
   inset: 0;
   background:
-    radial-gradient(ellipse 80% 50% at 20% 0%, rgba(124, 156, 255, 0.08), transparent 60%),
-    radial-gradient(ellipse 60% 50% at 100% 100%, rgba(167, 139, 250, 0.06), transparent 60%);
+    radial-gradient(ellipse 70% 50% at 10% -10%, rgba(125, 211, 252, 0.10), transparent 60%),
+    radial-gradient(ellipse 60% 40% at 90% 110%, rgba(167, 139, 250, 0.08), transparent 60%),
+    radial-gradient(ellipse 50% 30% at 50% 50%, rgba(255, 212, 59, 0.03), transparent 70%);
+  pointer-events: none;
+  z-index: 0;
+}
+
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(255,255,255,0.015) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.015) 1px, transparent 1px);
+  background-size: 32px 32px;
+  mask-image: radial-gradient(ellipse 80% 60% at 50% 50%, black 0%, transparent 80%);
   pointer-events: none;
   z-index: 0;
 }
 
 button, select, input, textarea { font-family: inherit; font-size: inherit; color: inherit; }
 
-button { transition: all 0.15s ease; }
-button:not(:disabled):hover { transform: translateY(-1px); }
-button:not(:disabled):active { transform: translateY(0); }
-button:disabled { opacity: 0.45; cursor: not-allowed; }
+button { transition: transform 0.12s ease, box-shadow 0.15s ease, background 0.15s ease, border-color 0.15s ease; border: none; }
+button:not(:disabled):active { transform: translateY(1px) scale(0.99); }
+button:disabled { opacity: 0.4; cursor: not-allowed; }
 
 select, input, textarea {
-  background: var(--bg-elev);
+  background: var(--bg-1);
   border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 6px 10px;
+  border-radius: 8px;
+  padding: 8px 12px;
   outline: none;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+  color: var(--text);
 }
 select:focus, input:focus, textarea:focus {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(124, 156, 255, 0.15);
+  box-shadow: 0 0 0 3px rgba(125, 211, 252, 0.15);
+  background: var(--bg-3);
 }
 
 .btn {
-  background: var(--bg-elev);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(255,255,255,0.04);
   border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 6px 12px;
+  border-radius: 8px;
+  padding: 8px 14px;
   cursor: pointer;
   color: var(--text);
   font-weight: 500;
+  font-size: 13px;
 }
-.btn:hover:not(:disabled) { background: var(--bg-elev-2); border-color: var(--border-strong); }
+.btn:hover:not(:disabled) {
+  background: rgba(255,255,255,0.07);
+  border-color: var(--border-strong);
+  transform: translateY(-1px);
+}
 
 .btn-primary {
   background: var(--accent-grad);
-  border: 1px solid transparent;
   color: #0b0d12;
   font-weight: 600;
-  box-shadow: 0 2px 8px rgba(124, 156, 255, 0.25);
+  box-shadow: 0 4px 16px rgba(125, 211, 252, 0.25), inset 0 1px 0 rgba(255,255,255,0.3);
+  border: none;
+  padding: 8px 18px;
+  border-radius: 8px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
 }
-.btn-primary:hover:not(:disabled) { box-shadow: 0 4px 14px rgba(124, 156, 255, 0.4); }
+.btn-primary:hover:not(:disabled) {
+  box-shadow: 0 6px 24px rgba(125, 211, 252, 0.4), inset 0 1px 0 rgba(255,255,255,0.4);
+  transform: translateY(-1px);
+}
 
-.btn-danger {
-  background: linear-gradient(135deg, #f87171 0%, #ef4444 100%);
+.btn-ghost {
+  background: transparent;
   border: 1px solid transparent;
-  color: #fff;
-  font-weight: 600;
+  padding: 8px 12px;
+  border-radius: 8px;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 13px;
+}
+.btn-ghost:hover:not(:disabled) { color: var(--text); background: rgba(255,255,255,0.04); }
+
+.btn-ai {
+  background: linear-gradient(135deg, rgba(248,113,113,0.12), rgba(167,139,250,0.18));
+  border: 1px solid rgba(248,113,113,0.35);
+  color: var(--text);
+}
+.btn-ai:hover:not(:disabled) {
+  background: linear-gradient(135deg, rgba(248,113,113,0.2), rgba(167,139,250,0.28));
+  border-color: rgba(248,113,113,0.55);
+}
+
+.kbd {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(0,0,0,0.25);
+  color: rgba(255,255,255,0.75);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 500;
+  border: 1px solid rgba(255,255,255,0.1);
+  line-height: 1.2;
 }
 
 .pill {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 3px 10px;
+  gap: 8px;
+  padding: 5px 12px;
   border-radius: 999px;
   font-size: 12px;
-  background: var(--bg-elev);
+  background: rgba(255,255,255,0.04);
   border: 1px solid var(--border);
   color: var(--text-dim);
+  font-weight: 500;
 }
 
 .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-faint); }
-.dot.live { background: var(--ok); box-shadow: 0 0 8px var(--ok); animation: pulse 2s infinite; }
-.dot.busy { background: var(--warn); box-shadow: 0 0 8px var(--warn); }
+.dot.live { background: var(--ok); box-shadow: 0 0 10px var(--ok); animation: pulse 2s infinite; }
+.dot.busy { background: var(--warn); box-shadow: 0 0 10px var(--warn); animation: pulse 1s infinite; }
+.dot.err  { background: var(--err); box-shadow: 0 0 10px var(--err); }
 
-@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.5} }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: 0 1px 0 rgba(255,255,255,0.02) inset, 0 20px 50px -20px rgba(0,0,0,0.5);
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  background: linear-gradient(180deg, rgba(255,255,255,0.02), transparent);
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  font-weight: 600;
+}
 
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--border); border-radius: 10px; border: 2px solid var(--bg); }
-::-webkit-scrollbar-thumb:hover { background: var(--border-strong); }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 10px; border: 2px solid transparent; background-clip: padding-box; }
+::-webkit-scrollbar-thumb:hover { background: var(--border-strong); background-clip: padding-box; border: 2px solid transparent; }
+
+/* Monaco override for nicer look */
+.monaco-editor, .monaco-editor-background, .monaco-editor .margin {
+  background: var(--panel) !important;
+}
