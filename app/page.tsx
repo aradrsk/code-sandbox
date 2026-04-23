@@ -209,9 +209,12 @@ export default function Page() {
   const [pkgInput, setPkgInput] = useState("");
   const [installing, setInstalling] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
-  const [aiContent, setAiContent] = useState<string>("");
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState<string>("");
+  const [aiMessages, setAiMessages] = useState<{ role: "user" | "assistant"; content: string }[]>([]);
+  const [aiInput, setAiInput] = useState("");
+  const aiScrollRef = useRef<HTMLDivElement>(null);
+  const aiContextRef = useRef<{ code: string; stdout: string; stderr: string; exitCode: number } | null>(null);
   const pyodideRef = useRef<any>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const codeRef = useRef(code); codeRef.current = code;
@@ -310,6 +313,10 @@ export default function Page() {
   useEffect(() => {
     if (outRef.current) outRef.current.scrollTop = outRef.current.scrollHeight;
   }, [lines]);
+
+  useEffect(() => {
+    if (aiScrollRef.current) aiScrollRef.current.scrollTop = aiScrollRef.current.scrollHeight;
+  }, [aiMessages, aiLoading]);
 
   function append(text: string, kind: OutLine["kind"] = "out") {
     setLines((ls) => [...ls, { text, kind }]);
@@ -422,28 +429,78 @@ export default function Page() {
     setAiOpen(true);
     setAiLoading(true);
     setAiError("");
-    setAiContent("");
+    setAiMessages([]);
     setExplaining(true);
+    aiContextRef.current = {
+      code: codeRef.current,
+      stdout: lastRun.stdout,
+      stderr: lastRun.stderr,
+      exitCode: lastRun.code,
+    };
     try {
       const r = await fetch("/api/explain", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          language: "python",
-          code: codeRef.current,
-          stdout: lastRun.stdout,
-          stderr: lastRun.stderr,
-          exitCode: lastRun.code,
+          ...aiContextRef.current,
         }),
       });
       const j = await r.json();
       if (j.error) setAiError(j.error);
-      else setAiContent(j.explanation ?? "");
+      else setAiMessages([{ role: "assistant", content: j.explanation ?? "" }]);
     } catch (e: any) {
       setAiError(e.message);
     } finally {
       setExplaining(false);
       setAiLoading(false);
+    }
+  }
+
+  async function sendChat() {
+    const text = aiInput.trim();
+    if (!text || aiLoading) return;
+    setAiInput("");
+    setAiError("");
+    const newMessages = [...aiMessages, { role: "user" as const, content: text }];
+    setAiMessages(newMessages);
+    setAiLoading(true);
+    try {
+      const ctx = aiContextRef.current ?? {
+        code: codeRef.current,
+        stdout: lastRun?.stdout ?? "",
+        stderr: lastRun?.stderr ?? "",
+        exitCode: lastRun?.code ?? 0,
+      };
+      const r = await fetch("/api/explain", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ...ctx, messages: newMessages }),
+      });
+      const j = await r.json();
+      if (j.error) setAiError(j.error);
+      else setAiMessages((ms) => [...ms, { role: "assistant", content: j.reply ?? "" }]);
+    } catch (e: any) {
+      setAiError(e.message);
+    } finally {
+      setAiLoading(false);
+    }
+  }
+
+  function openChat() {
+    if (!aiOpen) {
+      setAiOpen(true);
+      if (aiMessages.length === 0 && !aiLoading) {
+        aiContextRef.current = {
+          code: codeRef.current,
+          stdout: lastRun?.stdout ?? "",
+          stderr: lastRun?.stderr ?? "",
+          exitCode: lastRun?.code ?? 0,
+        };
+        setAiMessages([{
+          role: "assistant",
+          content: "Hi! Ask me anything about your Python code. I can explain errors, suggest fixes, or help you understand concepts.",
+        }]);
+      }
     }
   }
 
@@ -566,6 +623,11 @@ export default function Page() {
           </button>
         )}
 
+        <button className="btn" onClick={openChat} title="Chat with AI assistant">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+          AI Chat
+        </button>
+
         <span style={{ flex: 1 }} />
 
         <button
@@ -599,6 +661,28 @@ export default function Page() {
           {statusLabel}
         </span>
       </header>
+
+      <div style={{
+        position: "fixed",
+        bottom: 14,
+        left: 14,
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        padding: "6px 12px",
+        borderRadius: 999,
+        background: "var(--btn-surface)",
+        border: "1px solid var(--border)",
+        color: "var(--text-dim)",
+        fontSize: 11.5,
+        fontWeight: 500,
+        backdropFilter: "blur(8px)",
+        zIndex: 5,
+        pointerEvents: "auto",
+      }}>
+        <span style={{ display: "inline-flex", width: 14, height: 14, borderRadius: "50%", background: "var(--accent-grad)", boxShadow: "0 0 8px rgba(125,211,252,0.4)" }} />
+        Made by <strong style={{ color: "var(--text)", fontWeight: 650 }}>Arad</strong> — the dude hosting this Python challenge 🐍
+      </div>
 
       <main style={{
         display: "grid",
@@ -807,11 +891,38 @@ export default function Page() {
               <span style={{ fontSize: 11, color: "var(--text-faint)" }}>Powered by Gemini</span>
             </div>
           </div>
-          <button className="btn-ghost" onClick={() => setAiOpen(false)} style={{ padding: "6px 8px" }} title="Close (Esc)">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-          </button>
+          <div style={{ display: "flex", gap: 4 }}>
+            <button
+              className="btn-ghost"
+              onClick={() => { setAiMessages([]); setAiError(""); aiContextRef.current = null; }}
+              style={{ padding: "6px 8px" }}
+              title="Clear conversation"
+              disabled={aiMessages.length === 0}
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-2 14a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"/></svg>
+            </button>
+            <button className="btn-ghost" onClick={() => setAiOpen(false)} style={{ padding: "6px 8px" }} title="Close (Esc)">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+          </div>
         </div>
-        <div style={{ flex: 1, overflowY: "auto", padding: "18px 22px", fontSize: 13.5, color: "var(--text)" }}>
+
+        <div ref={aiScrollRef} style={{ flex: 1, overflowY: "auto", padding: "18px 20px", fontSize: 13.5, color: "var(--text)", display: "flex", flexDirection: "column", gap: 14 }}>
+          {aiMessages.map((m, i) => (
+            <div key={i} style={{
+              alignSelf: m.role === "user" ? "flex-end" : "stretch",
+              maxWidth: m.role === "user" ? "85%" : "100%",
+              background: m.role === "user" ? "var(--btn-surface-hover)" : "transparent",
+              border: m.role === "user" ? "1px solid var(--border)" : "none",
+              padding: m.role === "user" ? "10px 14px" : "0",
+              borderRadius: m.role === "user" ? 12 : 0,
+              animation: "fadeInUp 0.2s ease",
+            }}>
+              {m.role === "assistant"
+                ? <Markdown text={m.content} />
+                : <div style={{ whiteSpace: "pre-wrap" }}>{m.content}</div>}
+            </div>
+          ))}
           {aiLoading && (
             <div style={{ display: "flex", alignItems: "center", gap: 10, color: "var(--text-dim)" }}>
               <span className="dot busy" style={{ width: 10, height: 10 }} />
@@ -819,12 +930,33 @@ export default function Page() {
             </div>
           )}
           {aiError && (
-            <div style={{ color: "var(--err)", whiteSpace: "pre-wrap", fontFamily: "var(--mono)", fontSize: 12, lineHeight: 1.5 }}>
+            <div style={{ color: "var(--err)", whiteSpace: "pre-wrap", fontFamily: "var(--mono)", fontSize: 12, lineHeight: 1.5, background: "rgba(248,113,113,0.08)", padding: 12, borderRadius: 8, border: "1px solid rgba(248,113,113,0.25)" }}>
               {aiError}
             </div>
           )}
-          {!aiLoading && !aiError && aiContent && <Markdown text={aiContent} />}
         </div>
+
+        <form
+          onSubmit={(e) => { e.preventDefault(); sendChat(); }}
+          style={{ padding: "12px 16px", borderTop: "1px solid var(--border)", display: "flex", gap: 8, flexShrink: 0, background: "var(--panel-2)" }}
+        >
+          <input
+            value={aiInput}
+            onChange={(e) => setAiInput(e.target.value)}
+            placeholder="Ask a follow-up… (Enter to send)"
+            disabled={aiLoading}
+            style={{ flex: 1, fontSize: 13.5 }}
+            autoFocus={aiOpen}
+          />
+          <button
+            type="submit"
+            className="btn-primary"
+            disabled={aiLoading || !aiInput.trim()}
+            style={{ padding: "8px 14px" }}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M2 21l21-9L2 3v7l15 2-15 2z"/></svg>
+          </button>
+        </form>
       </aside>
 
       {showShortcuts && (
