@@ -4,46 +4,58 @@ import dynamic from "next/dynamic";
 
 const Editor = dynamic(() => import("@monaco-editor/react"), { ssr: false });
 
-const STARTERS: Record<string, string> = {
-  javascript: "console.log('hello from node', process.version);\n",
-  python:     "print('hello from python')\n",
-  typescript: "const msg: string = 'hello from ts';\nconsole.log(msg);\n",
-  bash:       "echo \"hello from bash, pwd=$(pwd)\"\n",
-  ruby:       "puts 'hello from ruby'\n",
-  go:         "package main\nimport \"fmt\"\nfunc main() { fmt.Println(\"hello from go\") }\n",
-};
-const MONACO_LANG: Record<string, string> = {
-  javascript: "javascript", python: "python", typescript: "typescript",
-  bash: "shell", ruby: "ruby", go: "go",
-};
-const LANG_LABEL: Record<string, string> = {
-  javascript: "JavaScript", python: "Python", typescript: "TypeScript",
-  bash: "Bash", ruby: "Ruby", go: "Go",
-};
+const STARTER = "print('hello from python')\n";
 
 type OutLine = { text: string; kind: "out" | "err" | "meta" };
 
+declare global {
+  interface Window {
+    loadPyodide?: (opts?: any) => Promise<any>;
+  }
+}
+
+const PYODIDE_VERSION = "0.26.2";
+const PYODIDE_URL = `https://cdn.jsdelivr.net/pyodide/v${PYODIDE_VERSION}/full/pyodide.js`;
+const PYODIDE_INDEX = `https://cdn.jsdelivr.net/pyodide/v${PYODIDE_VERSION}/full/`;
+
 export default function Page() {
-  const [sessionId, setSessionId] = useState<string>("");
-  const [language, setLanguage] = useState("javascript");
-  const [code, setCode] = useState(STARTERS.javascript);
+  const [code, setCode] = useState(STARTER);
   const [stdin, setStdin] = useState("");
-  const [cmd, setCmd] = useState("");
-  const [cwd, setCwd] = useState("—");
   const [busy, setBusy] = useState(false);
   const [explaining, setExplaining] = useState(false);
+  const [pyStatus, setPyStatus] = useState<"loading" | "ready" | "error">("loading");
   const [lastRun, setLastRun] = useState<{ stdout: string; stderr: string; code: number } | null>(null);
-  const [lines, setLines] = useState<OutLine[]>([{ text: "Output will appear here. Press Ctrl+Enter to run.", kind: "meta" }]);
+  const [lines, setLines] = useState<OutLine[]>([{ text: "Loading Python runtime (Pyodide)…", kind: "meta" }]);
+  const pyodideRef = useRef<any>(null);
   const codeRef = useRef(code); codeRef.current = code;
   const stdinRef = useRef(stdin); stdinRef.current = stdin;
-  const langRef = useRef(language); langRef.current = language;
-  const sidRef = useRef("");
   const outRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    fetch("/api/session", { method: "POST" })
-      .then((r) => r.json())
-      .then((j) => { setSessionId(j.id); sidRef.current = j.id; });
+    let cancelled = false;
+    (async () => {
+      try {
+        if (!window.loadPyodide) {
+          await new Promise<void>((resolve, reject) => {
+            const s = document.createElement("script");
+            s.src = PYODIDE_URL;
+            s.onload = () => resolve();
+            s.onerror = () => reject(new Error("failed to load pyodide.js"));
+            document.head.appendChild(s);
+          });
+        }
+        const py = await window.loadPyodide!({ indexURL: PYODIDE_INDEX });
+        if (cancelled) return;
+        pyodideRef.current = py;
+        setPyStatus("ready");
+        setLines([{ text: `Python ${py.runPython("import sys; sys.version.split()[0]")} ready. Press Ctrl+Enter to run.`, kind: "meta" }]);
+      } catch (e: any) {
+        if (cancelled) return;
+        setPyStatus("error");
+        setLines([{ text: `Failed to load Pyodide: ${e.message}`, kind: "err" }]);
+      }
+    })();
+    return () => { cancelled = true; };
   }, []);
 
   useEffect(() => {
@@ -63,43 +75,37 @@ export default function Page() {
   }
 
   async function run() {
-    if (!sidRef.current) return;
+    const py = pyodideRef.current;
+    if (!py || pyStatus !== "ready") return;
     setBusy(true);
+    let stdout = "";
+    let stderr = "";
     try {
-      const r = await fetch("/api/run", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ sessionId: sidRef.current, language: langRef.current, code: codeRef.current, stdin: stdinRef.current }),
-      });
-      const j = await r.json();
+      py.setStdout({ batched: (s: string) => { stdout += s + "\n"; } });
+      py.setStderr({ batched: (s: string) => { stderr += s + "\n"; } });
+      if (stdinRef.current) {
+        const lines = stdinRef.current.split("\n");
+        let i = 0;
+        py.setStdin({ stdin: () => (i < lines.length ? lines[i++] : null) });
+      } else {
+        py.setStdin({ stdin: () => null });
+      }
+      await py.loadPackagesFromImports(codeRef.current);
+      await py.runPythonAsync(codeRef.current);
       setLines([]);
-      if (j.stdout) append(j.stdout, "out");
-      if (j.stderr) append(j.stderr, "err");
-      append(`\n[exit ${j.code}${j.killed ? ", killed (timeout/output limit)" : ""}]\n`, "meta");
-      setLastRun({ stdout: j.stdout ?? "", stderr: j.stderr ?? "", code: j.code });
+      if (stdout) append(stdout, "out");
+      append(`\n[exit 0]\n`, "meta");
+      setLastRun({ stdout, stderr: "", code: 0 });
     } catch (e: any) {
-      append(`\n[client error] ${e.message}\n`, "err");
+      setLines([]);
+      if (stdout) append(stdout, "out");
+      const msg = e?.message ?? String(e);
+      stderr += msg;
+      append(msg + "\n", "err");
+      append(`\n[exit 1]\n`, "meta");
+      setLastRun({ stdout, stderr, code: 1 });
     } finally {
       setBusy(false);
-    }
-  }
-
-  async function exec(command: string) {
-    if (!sidRef.current) return;
-    append(`\n$ ${command}\n`, "meta");
-    try {
-      const r = await fetch("/api/exec", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ sessionId: sidRef.current, command }),
-      });
-      const j = await r.json();
-      if (j.stdout) append(j.stdout, "out");
-      if (j.stderr) append(j.stderr, "err");
-      append(`[exit ${j.code}${j.killed ? ", killed" : ""}]\n`, "meta");
-      if (j.cwd) setCwd(j.cwd);
-    } catch (e: any) {
-      append(`[client error] ${e.message}\n`, "err");
     }
   }
 
@@ -112,7 +118,7 @@ export default function Page() {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          language: langRef.current,
+          language: "python",
           code: codeRef.current,
           stdout: lastRun.stdout,
           stderr: lastRun.stderr,
@@ -130,11 +136,8 @@ export default function Page() {
   }
 
   const hasError = !!lastRun && (lastRun.code !== 0 || !!lastRun.stderr);
-
-  function changeLang(l: string) {
-    setLanguage(l);
-    if (!code.trim() || confirm(`Replace editor with starter snippet for ${LANG_LABEL[l]}?`)) setCode(STARTERS[l]);
-  }
+  const statusLabel = pyStatus === "loading" ? "loading python" : pyStatus === "error" ? "error" : busy ? "running" : "ready";
+  const statusDot = pyStatus === "loading" ? "busy" : pyStatus === "error" ? "err" : busy ? "busy" : "live";
 
   return (
     <div style={{ position: "relative", display: "grid", gridTemplateRows: "auto 1fr auto", height: "100vh", zIndex: 1 }}>
@@ -152,18 +155,18 @@ export default function Page() {
             width: 28, height: 28, borderRadius: 8,
             background: "var(--accent-grad)",
             display: "flex", alignItems: "center", justifyContent: "center",
-            fontWeight: 800, color: "#0b0d12", fontSize: 12,
+            fontWeight: 800, color: "#0b0d12", fontSize: 14,
             boxShadow: "0 2px 8px rgba(124,156,255,0.3)",
-            fontFamily: "var(--mono)",
-          }}>{"</>"}</div>
-          <strong style={{ fontSize: 15, letterSpacing: "-0.01em" }}>Code Sandbox</strong>
+          }}>🐍</div>
+          <strong style={{ fontSize: 15, letterSpacing: "-0.01em" }}>Python Sandbox</strong>
         </div>
 
-        <select value={language} onChange={(e) => changeLang(e.target.value)}>
-          {Object.keys(STARTERS).map((l) => <option key={l} value={l}>{LANG_LABEL[l]}</option>)}
-        </select>
-
-        <button className="btn-primary" onClick={run} disabled={busy} style={{ padding: "6px 14px", borderRadius: 6, cursor: "pointer" }}>
+        <button
+          className="btn-primary"
+          onClick={run}
+          disabled={busy || pyStatus !== "ready"}
+          style={{ padding: "6px 14px", borderRadius: 6, cursor: "pointer" }}
+        >
           {busy ? "Running…" : "▶  Run"}
           <span style={{ marginLeft: 8, opacity: 0.6, fontSize: 11, fontWeight: 500 }}>⌘↵</span>
         </button>
@@ -183,20 +186,20 @@ export default function Page() {
         <span style={{ flex: 1 }} />
 
         <span className="pill">
-          <span className={`dot ${busy ? "busy" : "live"}`} />
-          {busy ? "running" : "ready"}
+          <span className={`dot ${statusDot}`} />
+          {statusLabel}
         </span>
       </header>
 
       <main style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr", minHeight: 0, gap: 1, background: "var(--border)" }}>
         <div style={{ minHeight: 0, background: "var(--panel)", display: "flex", flexDirection: "column" }}>
           <div style={{ padding: "8px 14px", fontSize: 11, color: "var(--text-faint)", textTransform: "uppercase", letterSpacing: "0.08em", borderBottom: "1px solid var(--border)" }}>
-            Editor · {LANG_LABEL[language]}
+            Editor · Python
           </div>
           <div style={{ flex: 1, minHeight: 0 }}>
             <Editor
               height="100%"
-              language={MONACO_LANG[language]}
+              language="python"
               value={code}
               onChange={(v) => setCode(v ?? "")}
               theme="vs-dark"
@@ -216,7 +219,7 @@ export default function Page() {
           </div>
         </div>
 
-        <div style={{ display: "grid", gridTemplateRows: "1fr auto auto", minHeight: 0, background: "var(--panel)" }}>
+        <div style={{ display: "grid", gridTemplateRows: "1fr auto", minHeight: 0, background: "var(--panel)" }}>
           <div style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
             <div style={{ padding: "8px 14px", fontSize: 11, color: "var(--text-faint)", textTransform: "uppercase", letterSpacing: "0.08em", borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between" }}>
               <span>Output</span>
@@ -244,20 +247,9 @@ export default function Page() {
           <div style={{ display: "flex", flexDirection: "column", padding: "10px 14px", borderTop: "1px solid var(--border)", background: "var(--bg-elev)" }}>
             <label style={{ color: "var(--text-faint)", fontSize: 11, marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.08em" }}>stdin</label>
             <textarea value={stdin} onChange={(e) => setStdin(e.target.value)} spellCheck={false}
-              placeholder="optional input piped to the program"
+              placeholder="optional input for input() calls — one line per call"
               style={{ fontFamily: "var(--mono)", fontSize: 13, minHeight: 44, resize: "vertical" }} />
           </div>
-
-          <form
-            onSubmit={(e) => { e.preventDefault(); const v = cmd.trim(); if (v) { setCmd(""); exec(v); } }}
-            style={{ display: "flex", gap: 8, padding: "10px 14px", borderTop: "1px solid var(--border)", background: "var(--bg-elev)", alignItems: "center" }}
-          >
-            <span style={{ color: "var(--accent)", fontFamily: "var(--mono)", fontWeight: 600 }}>$</span>
-            <input value={cmd} onChange={(e) => setCmd(e.target.value)} autoComplete="off"
-              placeholder="shell command (e.g. ls, pip install requests)"
-              style={{ flex: 1, fontFamily: "var(--mono)", fontSize: 13 }} />
-            <button type="submit" className="btn">Exec</button>
-          </form>
         </div>
       </main>
 
@@ -272,8 +264,8 @@ export default function Page() {
         borderTop: "1px solid var(--border)",
         fontFamily: "var(--mono)",
       }}>
-        <span>📁 {cwd}</span>
-        <span>session: {sessionId.slice(0, 8) || "—"}</span>
+        <span>🐍 runs in your browser via Pyodide</span>
+        <span>no server required</span>
       </footer>
     </div>
   );
