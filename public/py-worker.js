@@ -88,20 +88,41 @@ function emitChunk(kind, text) {
   }
 }
 
-async function run(code, controlSab, dataSab) {
+async function run(payload, controlSab, dataSab) {
   const started = performance.now();
   pyodide.setStdout({ batched: (s) => emitChunk("stdout", s + "\n") });
   pyodide.setStderr({ batched: (s) => emitChunk("stderr", s + "\n") });
   pyodide.setStdin({ stdin: blockingStdin(controlSab, dataSab) });
+  // payload: { files: {name: content}, activeFile: string } OR { code }
+  let mainCode = "";
+  const files = payload.files || { "main.py": payload.code || "" };
+  const activeFile = payload.activeFile || "main.py";
   try {
-    await pyodide.loadPackagesFromImports(code);
-    // Auto-install mpl hook if the user imports matplotlib
-    if (/\b(import\s+matplotlib|from\s+matplotlib)/.test(code)) {
+    // Write files to /home/pyodide and ensure it's on sys.path
+    const FS = pyodide.FS;
+    const base = "/home/pyodide";
+    try { FS.mkdir(base); } catch (e) {}
+    // Clear stale .py files (only top-level ones we wrote previously)
+    try {
+      const entries = FS.readdir(base);
+      for (const e of entries) {
+        if (e.endsWith(".py")) {
+          try { FS.unlink(`${base}/${e}`); } catch (err) {}
+        }
+      }
+    } catch (e) {}
+    for (const name of Object.keys(files)) {
+      FS.writeFile(`${base}/${name}`, files[name] ?? "");
+    }
+    mainCode = files[activeFile] ?? "";
+    await pyodide.runPythonAsync(`import sys; sys.path.insert(0, "${base}")`);
+    await pyodide.loadPackagesFromImports(mainCode);
+    const importsMpl = /\b(import\s+matplotlib|from\s+matplotlib)/.test(mainCode);
+    if (importsMpl) {
       await pyodide.runPythonAsync(MPL_PATCH);
     }
-    await pyodide.runPythonAsync(code);
-    // Auto-show pending figures if user forgot plt.show()
-    if (/\b(import\s+matplotlib|from\s+matplotlib)/.test(code)) {
+    await pyodide.runPythonAsync(mainCode);
+    if (importsMpl) {
       await pyodide.runPythonAsync("try:\n  import matplotlib.pyplot as plt; plt.show()\nexcept Exception:\n  pass");
     }
     self.postMessage({ type: "done", durationMs: Math.round(performance.now() - started) });
@@ -127,6 +148,6 @@ async function install(packages) {
 self.onmessage = async (ev) => {
   const m = ev.data;
   if (m.type === "init") return init();
-  if (m.type === "run") return run(m.code, m.sab, m.dataSab);
+  if (m.type === "run") return run(m, m.sab, m.dataSab);
   if (m.type === "install") return install(m.packages);
 };

@@ -196,10 +196,14 @@ function PythonLogo({ size = 24 }: { size?: number }) {
 }
 
 type Theme = "dark" | "light";
+type Files = Record<string, string>;
 
 export default function Page() {
   const [theme, setTheme] = useState<Theme>("light");
-  const [code, setCode] = useState(STARTER);
+  const [files, setFiles] = useState<Files>({ "main.py": STARTER });
+  const [activeFile, setActiveFile] = useState<string>("main.py");
+  const code = files[activeFile] ?? "";
+  const setCode = (v: string) => setFiles((f) => ({ ...f, [activeFile]: v }));
   const [stdin, setStdin] = useState("");
   const [busy, setBusy] = useState(false);
   const [explaining, setExplaining] = useState(false);
@@ -236,6 +240,8 @@ export default function Page() {
   const runStderrRef = useRef<string>("");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const codeRef = useRef(code); codeRef.current = code;
+  const filesRef = useRef(files); filesRef.current = files;
+  const activeFileRef = useRef(activeFile); activeFileRef.current = activeFile;
   const stdinRef = useRef(stdin); stdinRef.current = stdin;
   const stdinLiveInputRef = useRef<HTMLInputElement>(null);
   const outRef = useRef<HTMLDivElement>(null);
@@ -251,25 +257,38 @@ export default function Page() {
     try { localStorage.setItem("theme", theme); } catch {}
   }, [theme]);
 
-  // Load initial code: URL hash (shared), then localStorage, else STARTER.
+  // Load initial: URL hash (shared single file), then localStorage (files map), else STARTER.
   useEffect(() => {
     try {
       const hash = window.location.hash;
       if (hash.startsWith("#code=")) {
         const decoded = decodeURIComponent(escape(atob(hash.slice(6).replace(/-/g, "+").replace(/_/g, "/"))));
-        setCode(decoded);
+        setFiles({ "main.py": decoded });
+        setActiveFile("main.py");
         return;
       }
-      const saved = localStorage.getItem("code");
-      if (saved) setCode(saved);
+      const raw = localStorage.getItem("files");
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === "object" && parsed.files && parsed.activeFile) {
+          setFiles(parsed.files);
+          setActiveFile(parsed.activeFile in parsed.files ? parsed.activeFile : Object.keys(parsed.files)[0]);
+          return;
+        }
+      }
+      // Legacy single-file localStorage
+      const legacy = localStorage.getItem("code");
+      if (legacy) setFiles({ "main.py": legacy });
     } catch {}
   }, []);
 
-  // Autosave code (debounced).
+  // Autosave files map.
   useEffect(() => {
-    const t = setTimeout(() => { try { localStorage.setItem("code", code); } catch {} }, 400);
+    const t = setTimeout(() => {
+      try { localStorage.setItem("files", JSON.stringify({ files, activeFile })); } catch {}
+    }, 400);
     return () => clearTimeout(t);
-  }, [code]);
+  }, [files, activeFile]);
 
   // Font size persist.
   useEffect(() => {
@@ -445,7 +464,8 @@ export default function Page() {
     stdinQueueRef.current = stdinRef.current ? stdinRef.current.split("\n").filter((_, i, a) => i < a.length - 1 || a[i] !== "") : [];
     workerRef.current.postMessage({
       type: "run",
-      code: codeRef.current,
+      files: filesRef.current,
+      activeFile: activeFileRef.current,
       sab: ctrlSabRef.current,
       dataSab: dataSabRef.current,
     });
@@ -456,17 +476,20 @@ export default function Page() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = "main.py";
+    a.download = activeFileRef.current;
     a.click();
     URL.revokeObjectURL(url);
-    showToast("Downloaded main.py");
+    showToast(`Downloaded ${activeFileRef.current}`);
   }
 
   function uploadFile(file: File) {
     const reader = new FileReader();
     reader.onload = () => {
-      setCode(String(reader.result ?? ""));
-      showToast(`Loaded ${file.name}`);
+      const name = /\.py$/.test(file.name) ? file.name : `${file.name}.py`;
+      const content = String(reader.result ?? "");
+      setFiles((f) => ({ ...f, [name]: content }));
+      setActiveFile(name);
+      showToast(`Loaded ${name}`);
     };
     reader.readAsText(file);
   }
@@ -483,7 +506,7 @@ export default function Page() {
   }
 
   function resetCode() {
-    if (confirm("Reset editor to starter code? (your current code will be lost)")) {
+    if (confirm(`Reset ${activeFile} to starter code? (current content will be lost)`)) {
       setCode(STARTER);
       showToast("Reset to starter");
     }
@@ -783,37 +806,119 @@ export default function Page() {
         minHeight: 0,
       }}>
         <section className="panel" style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
-          <div className="panel-head">
-            <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
-              Editor
-            </span>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, textTransform: "none", letterSpacing: 0 }}>
+          <div style={{
+            display: "flex", alignItems: "stretch",
+            borderBottom: "1px solid var(--border)",
+            background: "linear-gradient(180deg, rgba(255,255,255,0.02), transparent)",
+            minHeight: 38,
+            overflow: "hidden",
+          }}>
+            <div style={{ display: "flex", flex: 1, overflowX: "auto", alignItems: "stretch" }}>
+              {Object.keys(files).map((name) => (
+                <div
+                  key={name}
+                  onClick={() => setActiveFile(name)}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 8,
+                    padding: "0 14px",
+                    cursor: "pointer",
+                    fontSize: 12.5,
+                    fontFamily: "var(--mono)",
+                    color: name === activeFile ? "var(--text)" : "var(--text-faint)",
+                    background: name === activeFile ? "var(--panel)" : "transparent",
+                    borderRight: "1px solid var(--border)",
+                    borderBottom: name === activeFile ? "2px solid var(--accent)" : "2px solid transparent",
+                    whiteSpace: "nowrap",
+                    userSelect: "none",
+                  }}
+                  onDoubleClick={() => {
+                    const next = prompt("Rename file:", name);
+                    if (!next || next === name) return;
+                    if (!/\.py$/.test(next)) { showToast("File name must end in .py"); return; }
+                    if (files[next]) { showToast("A file with that name already exists"); return; }
+                    setFiles((f) => {
+                      const out: Files = {};
+                      for (const k of Object.keys(f)) out[k === name ? next : k] = f[k];
+                      return out;
+                    });
+                    if (activeFile === name) setActiveFile(next);
+                  }}
+                  title="Click to open · Double-click to rename"
+                >
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                  {name}
+                  {Object.keys(files).length > 1 && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (!confirm(`Delete ${name}?`)) return;
+                        setFiles((f) => {
+                          const { [name]: _, ...rest } = f;
+                          return rest;
+                        });
+                        if (activeFile === name) {
+                          const remaining = Object.keys(files).filter((k) => k !== name);
+                          setActiveFile(remaining[0]);
+                        }
+                      }}
+                      title="Close file"
+                      style={{
+                        background: "transparent", border: "none", cursor: "pointer",
+                        color: "var(--text-faint)", padding: 2, borderRadius: 3,
+                        display: "flex", alignItems: "center",
+                      }}
+                      onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(248,113,113,0.15)")}
+                      onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                    >
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                    </button>
+                  )}
+                </div>
+              ))}
+              <button
+                onClick={() => {
+                  let n = 1;
+                  let name = `file${n}.py`;
+                  while (files[name]) { n++; name = `file${n}.py`; }
+                  const real = prompt("New file name:", name);
+                  if (!real) return;
+                  if (!/\.py$/.test(real)) { showToast("File name must end in .py"); return; }
+                  if (files[real]) { showToast("A file with that name already exists"); return; }
+                  setFiles((f) => ({ ...f, [real]: "" }));
+                  setActiveFile(real);
+                }}
+                title="New file"
+                style={{
+                  background: "transparent", border: "none", cursor: "pointer",
+                  color: "var(--text-faint)", padding: "0 14px",
+                  display: "flex", alignItems: "center", gap: 4,
+                  fontSize: 13, fontWeight: 600,
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.color = "var(--text)")}
+                onMouseLeave={(e) => (e.currentTarget.style.color = "var(--text-faint)")}
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              </button>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "0 12px", borderLeft: "1px solid var(--border)" }}>
               <button
                 className="btn-ghost"
                 onClick={() => setFontSize((s) => Math.max(10, s - 1))}
                 title="Decrease font size"
-                style={{ padding: "2px 6px", fontSize: 13, fontWeight: 600 }}
+                style={{ padding: "2px 6px", fontSize: 12, fontWeight: 600 }}
               >A−</button>
               <button
                 className="btn-ghost"
                 onClick={() => setFontSize((s) => Math.min(24, s + 1))}
                 title="Increase font size"
-                style={{ padding: "2px 6px", fontSize: 13, fontWeight: 600 }}
+                style={{ padding: "2px 6px", fontSize: 12, fontWeight: 600 }}
               >A+</button>
               <button
                 className="btn-ghost"
                 onClick={() => setWordWrap((w) => !w)}
                 title="Toggle word wrap"
-                style={{ padding: "2px 6px", fontSize: 11, fontWeight: 600, color: wordWrap ? "var(--accent)" : undefined }}
+                style={{ padding: "2px 6px", fontSize: 10.5, fontWeight: 700, color: wordWrap ? "var(--accent)" : undefined }}
               >WRAP</button>
-              <button
-                className="btn-ghost"
-                onClick={resetCode}
-                title="Reset to starter code"
-                style={{ padding: "2px 6px", fontSize: 11, fontWeight: 600 }}
-              >RESET</button>
-              <span style={{ fontSize: 10.5, fontFamily: "var(--mono)", color: "var(--text-faint)", marginLeft: 4 }}>main.py</span>
             </div>
           </div>
           <div style={{ flex: 1, minHeight: 0 }}>
