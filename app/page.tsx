@@ -212,6 +212,9 @@ export default function Page() {
       const cleaned = cleanPyodideTraceback(e?.message ?? String(e));
       stderr += cleaned;
       append(cleaned + "\n", "err");
+      if (/EOFError.*reading a line/i.test(cleaned)) {
+        append(`\n💡 Your code called input() but the stdin box is empty. Type the input below — one line per input() call — then Run again.\n`, "meta");
+      }
       append(`\n✗ Errored after ${duration}ms\n`, "meta");
       setLastRun({ stdout, stderr, code: 1, durationMs: duration });
     } finally {
