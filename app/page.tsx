@@ -49,6 +49,179 @@ print(f"Nice to meet you, {name}!")
 
 type OutLine = { text: string; kind: "out" | "err" | "meta" } | { kind: "image"; data: string };
 
+const PY_KEYWORDS = [
+  "False", "None", "True", "and", "as", "assert", "async", "await",
+  "break", "class", "continue", "def", "del", "elif", "else", "except",
+  "finally", "for", "from", "global", "if", "import", "in", "is",
+  "lambda", "nonlocal", "not", "or", "pass", "raise", "return", "try",
+  "while", "with", "yield", "match", "case",
+];
+
+const PY_BUILTINS: Array<[string, string, string]> = [
+  ["abs", "abs(${1:x})", "Return the absolute value of a number."],
+  ["all", "all(${1:iterable})", "Return True if all elements are truthy."],
+  ["any", "any(${1:iterable})", "Return True if any element is truthy."],
+  ["ascii", "ascii(${1:object})", "Return a printable ASCII-only representation."],
+  ["bin", "bin(${1:x})", "Convert an integer to a binary string."],
+  ["bool", "bool(${1:x})", "Return True or False."],
+  ["bytes", "bytes(${1:source})", "Create an immutable bytes object."],
+  ["callable", "callable(${1:object})", "Test whether the object appears callable."],
+  ["chr", "chr(${1:i})", "Return the Unicode character for an integer."],
+  ["dict", "dict(${1:})", "Create a dictionary."],
+  ["dir", "dir(${1:object})", "List names in the given object or scope."],
+  ["divmod", "divmod(${1:a}, ${2:b})", "Return the pair (a // b, a % b)."],
+  ["enumerate", "enumerate(${1:iterable})", "Yield (index, value) pairs."],
+  ["eval", "eval(${1:source})", "Evaluate a Python expression."],
+  ["exec", "exec(${1:source})", "Execute Python code."],
+  ["filter", "filter(${1:function}, ${2:iterable})", "Construct an iterator from elements of iterable for which function returns true."],
+  ["float", "float(${1:x})", "Convert a value to floating point."],
+  ["format", "format(${1:value}, ${2:format_spec})", "Format a value."],
+  ["frozenset", "frozenset(${1:iterable})", "Create an immutable set."],
+  ["getattr", "getattr(${1:object}, ${2:name})", "Get a named attribute from an object."],
+  ["hasattr", "hasattr(${1:object}, ${2:name})", "Return whether the object has an attribute."],
+  ["hash", "hash(${1:object})", "Return the hash value of an object."],
+  ["hex", "hex(${1:x})", "Convert an integer to a hex string."],
+  ["id", "id(${1:object})", "Return the identity of an object."],
+  ["input", "input(${1:prompt})", "Read a string from standard input."],
+  ["int", "int(${1:x})", "Convert to an integer."],
+  ["isinstance", "isinstance(${1:object}, ${2:classinfo})", "Return whether an object is an instance."],
+  ["issubclass", "issubclass(${1:cls}, ${2:classinfo})", "Return whether a class is a subclass."],
+  ["iter", "iter(${1:object})", "Get an iterator from an object."],
+  ["len", "len(${1:obj})", "Return the number of items in an object."],
+  ["list", "list(${1:iterable})", "Create a list."],
+  ["map", "map(${1:function}, ${2:iterable})", "Apply function to every item of iterable."],
+  ["max", "max(${1:iterable})", "Return the largest item."],
+  ["min", "min(${1:iterable})", "Return the smallest item."],
+  ["next", "next(${1:iterator})", "Advance an iterator."],
+  ["object", "object()", "The base class of all classes."],
+  ["oct", "oct(${1:x})", "Convert an integer to an octal string."],
+  ["open", "open(${1:file}, ${2:mode})", "Open a file."],
+  ["ord", "ord(${1:c})", "Return the Unicode codepoint of a single character."],
+  ["pow", "pow(${1:base}, ${2:exp})", "Return base to the power exp."],
+  ["print", "print(${1:*objects})", "Print objects to the stream."],
+  ["range", "range(${1:stop})", "Generate a sequence of integers."],
+  ["repr", "repr(${1:object})", "Return a printable representation."],
+  ["reversed", "reversed(${1:seq})", "Return a reverse iterator."],
+  ["round", "round(${1:number}, ${2:ndigits})", "Round a number."],
+  ["set", "set(${1:iterable})", "Create a set."],
+  ["setattr", "setattr(${1:object}, ${2:name}, ${3:value})", "Set an attribute."],
+  ["slice", "slice(${1:stop})", "Create a slice object."],
+  ["sorted", "sorted(${1:iterable})", "Return a new sorted list."],
+  ["str", "str(${1:object})", "Convert to a string."],
+  ["sum", "sum(${1:iterable})", "Sum the items of an iterable."],
+  ["super", "super()", "Return a proxy for the parent class."],
+  ["tuple", "tuple(${1:iterable})", "Create a tuple."],
+  ["type", "type(${1:object})", "Return the type of an object."],
+  ["vars", "vars(${1:object})", "Return __dict__ of an object."],
+  ["zip", "zip(${1:*iterables})", "Aggregate elements from iterables."],
+];
+
+const PY_MODULES = [
+  "os", "sys", "math", "random", "json", "re", "datetime", "time",
+  "collections", "itertools", "functools", "typing", "pathlib",
+  "csv", "urllib", "http", "socket", "threading", "subprocess",
+  "argparse", "logging", "unittest", "asyncio", "io",
+  "numpy", "pandas", "matplotlib", "matplotlib.pyplot", "scipy", "sklearn",
+  "requests", "bs4", "pyodide", "micropip",
+];
+
+const PY_SNIPPETS: Array<[string, string, string]> = [
+  ["ifmain", "if __name__ == \"__main__\":\n\t${1:main()}", "if __name__ == \"__main__\" guard"],
+  ["for", "for ${1:item} in ${2:iterable}:\n\t${3:pass}", "for loop"],
+  ["forenumerate", "for ${1:i}, ${2:item} in enumerate(${3:iterable}):\n\t${4:pass}", "for with enumerate"],
+  ["while", "while ${1:condition}:\n\t${2:pass}", "while loop"],
+  ["def", "def ${1:name}(${2:args}):\n\t\"\"\"${3:docstring}\"\"\"\n\t${4:pass}", "function definition"],
+  ["class", "class ${1:Name}:\n\tdef __init__(self, ${2:args}):\n\t\t${3:pass}", "class definition"],
+  ["try", "try:\n\t${1:pass}\nexcept ${2:Exception} as e:\n\t${3:pass}", "try/except"],
+  ["with", "with ${1:open(\"file\")} as ${2:f}:\n\t${3:pass}", "with statement"],
+  ["lambda", "lambda ${1:x}: ${2:x}", "lambda expression"],
+  ["listcomp", "[${1:x} for ${2:x} in ${3:iterable}]", "list comprehension"],
+  ["dictcomp", "{${1:k}: ${2:v} for ${3:k}, ${4:v} in ${5:iterable}}", "dict comprehension"],
+];
+
+let _completionsRegistered = false;
+function registerPythonCompletions(monaco: any) {
+  if (_completionsRegistered) return;
+  _completionsRegistered = true;
+
+  const Kind = monaco.languages.CompletionItemKind;
+  const InsertTextRule = monaco.languages.CompletionItemInsertTextRule;
+
+  monaco.languages.registerCompletionItemProvider("python", {
+    triggerCharacters: [".", " ", "(", "\n"],
+    provideCompletionItems(model: any, position: any) {
+      const word = model.getWordUntilPosition(position);
+      const range = {
+        startLineNumber: position.lineNumber,
+        endLineNumber: position.lineNumber,
+        startColumn: word.startColumn,
+        endColumn: word.endColumn,
+      };
+      const line = model.getLineContent(position.lineNumber).slice(0, position.column - 1);
+      const afterImport = /(^|\s)(?:import|from)\s+[\w.]*$/.test(line);
+
+      const suggestions: any[] = [];
+
+      if (afterImport) {
+        for (const mod of PY_MODULES) {
+          suggestions.push({
+            label: mod,
+            kind: Kind.Module,
+            insertText: mod,
+            range,
+          });
+        }
+        return { suggestions };
+      }
+
+      for (const kw of PY_KEYWORDS) {
+        suggestions.push({
+          label: kw,
+          kind: Kind.Keyword,
+          insertText: kw,
+          range,
+        });
+      }
+
+      for (const [name, insert, doc] of PY_BUILTINS) {
+        suggestions.push({
+          label: name,
+          kind: Kind.Function,
+          insertText: insert,
+          insertTextRules: InsertTextRule.InsertAsSnippet,
+          documentation: doc,
+          detail: "built-in",
+          range,
+        });
+      }
+
+      for (const [label, insert, doc] of PY_SNIPPETS) {
+        suggestions.push({
+          label,
+          kind: Kind.Snippet,
+          insertText: insert,
+          insertTextRules: InsertTextRule.InsertAsSnippet,
+          documentation: doc,
+          detail: "snippet",
+          range,
+        });
+      }
+
+      for (const mod of PY_MODULES) {
+        suggestions.push({
+          label: mod,
+          kind: Kind.Module,
+          insertText: mod,
+          range,
+          detail: "module",
+        });
+      }
+
+      return { suggestions };
+    },
+  });
+}
+
 function extractErrorLine(raw: string): number | null {
   // find File "<exec>", line N
   const m = /File "<exec>", line (\d+)/.exec(raw);
@@ -1033,7 +1206,11 @@ export default function Page() {
               language="python"
               value={code}
               onChange={(v) => { setCode(v ?? ""); if (errorLine) setErrorLine(null); }}
-              onMount={(editor, monaco) => { editorRef.current = editor; monacoRef.current = monaco; }}
+              onMount={(editor, monaco) => {
+                editorRef.current = editor;
+                monacoRef.current = monaco;
+                registerPythonCompletions(monaco);
+              }}
               theme={theme === "dark" ? "vs-dark" : "vs"}
               options={{
                 fontSize,
@@ -1051,6 +1228,12 @@ export default function Page() {
                 lineNumbersMinChars: 3,
                 folding: true,
                 bracketPairColorization: { enabled: true },
+                quickSuggestions: { other: true, comments: false, strings: false },
+                suggestOnTriggerCharacters: true,
+                acceptSuggestionOnEnter: "smart",
+                tabCompletion: "on",
+                wordBasedSuggestions: "currentDocument",
+                suggest: { showKeywords: true, showSnippets: true, showFunctions: true, showModules: true, showWords: true },
               }}
             />
           </div>
