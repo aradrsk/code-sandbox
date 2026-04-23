@@ -16,7 +16,7 @@ export type Lang = {
 
 export const LANGS: Record<string, Lang> = {
   javascript: { file: "main.js", build: (f) => [["node", [f]]] },
-  python:     { file: "main.py", build: (f) => [["python", [f]], ["python3", [f]], ["py", ["-3", f]]] },
+  python:     { file: "main.py", build: (f) => [["python3", [f]], ["python", [f]], ["/usr/bin/python3", [f]], ["py", ["-3", f]]] },
   typescript: { file: "main.ts", build: (f) => [["npx", ["-y", "tsx", f]]] },
   bash:       { file: "main.sh", build: (f) => [["bash", [f]]] },
   ruby:       { file: "main.rb", build: (f) => [["ruby", [f]]] },
