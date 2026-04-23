@@ -85,6 +85,90 @@ const PYODIDE_VERSION = "0.26.2";
 const PYODIDE_URL = `https://cdn.jsdelivr.net/pyodide/v${PYODIDE_VERSION}/full/pyodide.js`;
 const PYODIDE_INDEX = `https://cdn.jsdelivr.net/pyodide/v${PYODIDE_VERSION}/full/`;
 
+function renderInline(text: string): (string | React.ReactElement)[] {
+  const parts: (string | React.ReactElement)[] = [];
+  const re = /(\*\*([^*]+)\*\*)|(`([^`]+)`)|(\*([^*]+)\*)/g;
+  let last = 0;
+  let m: RegExpExecArray | null;
+  let key = 0;
+  while ((m = re.exec(text))) {
+    if (m.index > last) parts.push(text.slice(last, m.index));
+    if (m[1]) parts.push(<strong key={key++}>{m[2]}</strong>);
+    else if (m[3]) parts.push(<code key={key++} className="md-code">{m[4]}</code>);
+    else if (m[5]) parts.push(<em key={key++}>{m[6]}</em>);
+    last = re.lastIndex;
+  }
+  if (last < text.length) parts.push(text.slice(last));
+  return parts;
+}
+
+function Markdown({ text }: { text: string }) {
+  const blocks: React.ReactElement[] = [];
+  const lines = text.split("\n");
+  let i = 0;
+  let key = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    // fenced code block
+    if (line.trim().startsWith("```")) {
+      const lang = line.trim().slice(3).trim();
+      const code: string[] = [];
+      i++;
+      while (i < lines.length && !lines[i].trim().startsWith("```")) {
+        code.push(lines[i]);
+        i++;
+      }
+      i++; // skip closing ```
+      blocks.push(
+        <pre key={key++} className="md-pre"><code>{code.join("\n")}{lang ? "" : ""}</code></pre>
+      );
+      continue;
+    }
+    // headers
+    const h = /^(#{1,6})\s+(.*)$/.exec(line);
+    if (h) {
+      const level = h[1].length;
+      const content = renderInline(h[2]);
+      const sizes = [20, 18, 16, 15, 14, 13];
+      blocks.push(
+        <div key={key++} style={{ fontSize: sizes[level - 1], fontWeight: 700, margin: "14px 0 6px", letterSpacing: "-0.01em" }}>
+          {content}
+        </div>
+      );
+      i++;
+      continue;
+    }
+    // bullet list
+    if (/^\s*[-*]\s+/.test(line)) {
+      const items: string[] = [];
+      while (i < lines.length && /^\s*[-*]\s+/.test(lines[i])) {
+        items.push(lines[i].replace(/^\s*[-*]\s+/, ""));
+        i++;
+      }
+      blocks.push(
+        <ul key={key++} style={{ margin: "6px 0", paddingLeft: 20 }}>
+          {items.map((it, idx) => <li key={idx} style={{ margin: "3px 0" }}>{renderInline(it)}</li>)}
+        </ul>
+      );
+      continue;
+    }
+    // blank line
+    if (line.trim() === "") {
+      blocks.push(<div key={key++} style={{ height: 8 }} />);
+      i++;
+      continue;
+    }
+    // paragraph
+    blocks.push(
+      <p key={key++} style={{ margin: "4px 0", lineHeight: 1.6 }}>
+        {renderInline(line)}
+      </p>
+    );
+    i++;
+  }
+  return <>{blocks}</>;
+}
+
 function PythonLogo({ size = 24 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 111 110" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -124,6 +208,10 @@ export default function Page() {
   const [wordWrap, setWordWrap] = useState(false);
   const [pkgInput, setPkgInput] = useState("");
   const [installing, setInstalling] = useState(false);
+  const [aiOpen, setAiOpen] = useState(false);
+  const [aiContent, setAiContent] = useState<string>("");
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState<string>("");
   const pyodideRef = useRef<any>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const codeRef = useRef(code); codeRef.current = code;
@@ -213,7 +301,7 @@ export default function Page() {
       if (mod && e.key === "Enter") { e.preventDefault(); run(); }
       else if (mod && e.key.toLowerCase() === "s") { e.preventDefault(); downloadFile(); }
       else if (mod && e.key === "/") { e.preventDefault(); setShowShortcuts((s) => !s); }
-      else if (e.key === "Escape") { setShowShortcuts(false); setShowExamples(false); }
+      else if (e.key === "Escape") { setShowShortcuts(false); setShowExamples(false); setAiOpen(false); }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
@@ -331,8 +419,11 @@ export default function Page() {
 
   async function explain() {
     if (!lastRun) return;
+    setAiOpen(true);
+    setAiLoading(true);
+    setAiError("");
+    setAiContent("");
     setExplaining(true);
-    append(`\n✨ Asking AI to explain...\n`, "meta");
     try {
       const r = await fetch("/api/explain", {
         method: "POST",
@@ -346,12 +437,13 @@ export default function Page() {
         }),
       });
       const j = await r.json();
-      if (j.error) append(`\n[AI error] ${j.error}\n`, "err");
-      else append(`\n${j.explanation}\n`, "meta");
+      if (j.error) setAiError(j.error);
+      else setAiContent(j.explanation ?? "");
     } catch (e: any) {
-      append(`\n[client error] ${e.message}\n`, "err");
+      setAiError(e.message);
     } finally {
       setExplaining(false);
+      setAiLoading(false);
     }
   }
 
@@ -678,6 +770,62 @@ export default function Page() {
           {toast}
         </div>
       )}
+
+      <aside style={{
+        position: "fixed",
+        top: 0, right: 0, bottom: 0,
+        width: aiOpen ? "min(440px, 90vw)" : 0,
+        background: "var(--panel)",
+        borderLeft: aiOpen ? "1px solid var(--border-strong)" : "none",
+        boxShadow: aiOpen ? "-20px 0 60px -20px rgba(0,0,0,0.4)" : "none",
+        transition: "width 0.28s cubic-bezier(0.4, 0, 0.2, 1)",
+        overflow: "hidden",
+        zIndex: 40,
+        display: "flex",
+        flexDirection: "column",
+      }}>
+        <div style={{
+          padding: "14px 20px",
+          borderBottom: "1px solid var(--border)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 10,
+          flexShrink: 0,
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div style={{
+              width: 28, height: 28, borderRadius: 8,
+              background: "linear-gradient(135deg, #f87171, #a78bfa)",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              boxShadow: "0 2px 10px rgba(167,139,250,0.35)",
+            }}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="#fff"><path d="M12 2l2.09 6.26L20 10l-4.91 3.74L16.18 20 12 16.54 7.82 20l1.09-6.26L4 10l5.91-1.74z"/></svg>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", lineHeight: 1.2 }}>
+              <strong style={{ fontSize: 14, letterSpacing: "-0.01em" }}>AI Explanation</strong>
+              <span style={{ fontSize: 11, color: "var(--text-faint)" }}>Powered by Gemini</span>
+            </div>
+          </div>
+          <button className="btn-ghost" onClick={() => setAiOpen(false)} style={{ padding: "6px 8px" }} title="Close (Esc)">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+        <div style={{ flex: 1, overflowY: "auto", padding: "18px 22px", fontSize: 13.5, color: "var(--text)" }}>
+          {aiLoading && (
+            <div style={{ display: "flex", alignItems: "center", gap: 10, color: "var(--text-dim)" }}>
+              <span className="dot busy" style={{ width: 10, height: 10 }} />
+              Thinking…
+            </div>
+          )}
+          {aiError && (
+            <div style={{ color: "var(--err)", whiteSpace: "pre-wrap", fontFamily: "var(--mono)", fontSize: 12, lineHeight: 1.5 }}>
+              {aiError}
+            </div>
+          )}
+          {!aiLoading && !aiError && aiContent && <Markdown text={aiContent} />}
+        </div>
+      </aside>
 
       {showShortcuts && (
         <>
