@@ -57,7 +57,7 @@ ${String(stderr ?? "").slice(0, 4000)}`;
   try {
     const ai = new GoogleGenAI({ apiKey });
     const resp = await ai.models.generateContent({
-      model: "gemini-2.0-flash",
+      model: process.env.GEMINI_MODEL || "gemini-flash-latest",
       contents: userMsg,
       config: { systemInstruction: system },
     });

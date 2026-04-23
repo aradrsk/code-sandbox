@@ -118,7 +118,14 @@ export default function Page() {
   const [lastRun, setLastRun] = useState<{ stdout: string; stderr: string; code: number; durationMs: number } | null>(null);
   const [lines, setLines] = useState<OutLine[]>([{ text: "Loading Python runtime…", kind: "meta" }]);
   const [showExamples, setShowExamples] = useState(false);
+  const [showShortcuts, setShowShortcuts] = useState(false);
+  const [toast, setToast] = useState<string>("");
+  const [fontSize, setFontSize] = useState(14);
+  const [wordWrap, setWordWrap] = useState(false);
+  const [pkgInput, setPkgInput] = useState("");
+  const [installing, setInstalling] = useState(false);
   const pyodideRef = useRef<any>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const codeRef = useRef(code); codeRef.current = code;
   const stdinRef = useRef(stdin); stdinRef.current = stdin;
   const outRef = useRef<HTMLDivElement>(null);
@@ -133,6 +140,41 @@ export default function Page() {
     document.documentElement.setAttribute("data-theme", theme);
     try { localStorage.setItem("theme", theme); } catch {}
   }, [theme]);
+
+  // Load initial code: URL hash (shared), then localStorage, else STARTER.
+  useEffect(() => {
+    try {
+      const hash = window.location.hash;
+      if (hash.startsWith("#code=")) {
+        const decoded = decodeURIComponent(escape(atob(hash.slice(6).replace(/-/g, "+").replace(/_/g, "/"))));
+        setCode(decoded);
+        return;
+      }
+      const saved = localStorage.getItem("code");
+      if (saved) setCode(saved);
+    } catch {}
+  }, []);
+
+  // Autosave code (debounced).
+  useEffect(() => {
+    const t = setTimeout(() => { try { localStorage.setItem("code", code); } catch {} }, 400);
+    return () => clearTimeout(t);
+  }, [code]);
+
+  // Font size persist.
+  useEffect(() => {
+    const s = Number(localStorage.getItem("fontSize") || 0);
+    if (s >= 10 && s <= 24) setFontSize(s);
+    const w = localStorage.getItem("wordWrap");
+    if (w === "1") setWordWrap(true);
+  }, []);
+  useEffect(() => { try { localStorage.setItem("fontSize", String(fontSize)); } catch {} }, [fontSize]);
+  useEffect(() => { try { localStorage.setItem("wordWrap", wordWrap ? "1" : "0"); } catch {} }, [wordWrap]);
+
+  function showToast(msg: string) {
+    setToast(msg);
+    setTimeout(() => setToast(""), 2200);
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -167,7 +209,11 @@ export default function Page() {
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); run(); }
+      const mod = e.ctrlKey || e.metaKey;
+      if (mod && e.key === "Enter") { e.preventDefault(); run(); }
+      else if (mod && e.key.toLowerCase() === "s") { e.preventDefault(); downloadFile(); }
+      else if (mod && e.key === "/") { e.preventDefault(); setShowShortcuts((s) => !s); }
+      else if (e.key === "Escape") { setShowShortcuts(false); setShowExamples(false); }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
@@ -219,6 +265,67 @@ export default function Page() {
       setLastRun({ stdout, stderr, code: 1, durationMs: duration });
     } finally {
       setBusy(false);
+    }
+  }
+
+  function downloadFile() {
+    const blob = new Blob([codeRef.current], { type: "text/x-python" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "main.py";
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast("Downloaded main.py");
+  }
+
+  function uploadFile(file: File) {
+    const reader = new FileReader();
+    reader.onload = () => {
+      setCode(String(reader.result ?? ""));
+      showToast(`Loaded ${file.name}`);
+    };
+    reader.readAsText(file);
+  }
+
+  async function shareLink() {
+    try {
+      const b64 = btoa(unescape(encodeURIComponent(codeRef.current))).replace(/\+/g, "-").replace(/\//g, "_");
+      const url = `${window.location.origin}${window.location.pathname}#code=${b64}`;
+      await navigator.clipboard.writeText(url);
+      showToast("Share link copied to clipboard");
+    } catch (e: any) {
+      showToast(`Copy failed: ${e.message}`);
+    }
+  }
+
+  function resetCode() {
+    if (confirm("Reset editor to starter code? (your current code will be lost)")) {
+      setCode(STARTER);
+      showToast("Reset to starter");
+    }
+  }
+
+  async function installPackages() {
+    const py = pyodideRef.current;
+    if (!py || pyStatus !== "ready") return;
+    const names = pkgInput.trim().split(/\s+/).filter(Boolean);
+    if (!names.length) return;
+    setInstalling(true);
+    append(`\n📦 Installing ${names.join(", ")} via micropip...\n`, "meta");
+    try {
+      await py.loadPackage("micropip");
+      const micropip = py.pyimport("micropip");
+      for (const name of names) {
+        await micropip.install(name);
+        append(`  ✓ ${name}\n`, "meta");
+      }
+      append(`Done. You can now \`import\` them.\n`, "meta");
+      setPkgInput("");
+    } catch (e: any) {
+      append(`  ✗ ${e.message}\n`, "err");
+    } finally {
+      setInstalling(false);
     }
   }
 
@@ -338,7 +445,27 @@ export default function Page() {
           )}
         </div>
 
-        <button className="btn-ghost" onClick={() => setLines([])}>Clear output</button>
+        <button className="btn" onClick={shareLink} title="Copy a shareable link">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+          Share
+        </button>
+
+        <button className="btn" onClick={downloadFile} title="Download as main.py (Ctrl+S)">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        </button>
+
+        <button className="btn" onClick={() => fileInputRef.current?.click()} title="Upload .py file">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+        </button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".py,text/x-python,text/plain"
+          style={{ display: "none" }}
+          onChange={(e) => { const f = e.target.files?.[0]; if (f) uploadFile(f); e.target.value = ""; }}
+        />
+
+        <button className="btn-ghost" onClick={() => setLines([])} title="Clear output console">Clear</button>
 
         {hasError && (
           <button className="btn btn-ai" onClick={explain} disabled={explaining}>
@@ -348,6 +475,15 @@ export default function Page() {
         )}
 
         <span style={{ flex: 1 }} />
+
+        <button
+          className="btn-ghost"
+          onClick={() => setShowShortcuts(true)}
+          title="Keyboard shortcuts (Ctrl+/)"
+          style={{ padding: "8px 10px" }}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="4" width="20" height="16" rx="2" ry="2"/><path d="M6 8h.01M10 8h.01M14 8h.01M18 8h.01M6 12h.01M10 12h.01M14 12h.01M18 12h.01M7 16h10"/></svg>
+        </button>
 
         <button
           className="theme-toggle"
@@ -385,7 +521,33 @@ export default function Page() {
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
               Editor
             </span>
-            <span style={{ fontSize: 10.5, fontFamily: "var(--mono)", textTransform: "none", letterSpacing: 0, color: "var(--text-faint)" }}>main.py</span>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, textTransform: "none", letterSpacing: 0 }}>
+              <button
+                className="btn-ghost"
+                onClick={() => setFontSize((s) => Math.max(10, s - 1))}
+                title="Decrease font size"
+                style={{ padding: "2px 6px", fontSize: 13, fontWeight: 600 }}
+              >A−</button>
+              <button
+                className="btn-ghost"
+                onClick={() => setFontSize((s) => Math.min(24, s + 1))}
+                title="Increase font size"
+                style={{ padding: "2px 6px", fontSize: 13, fontWeight: 600 }}
+              >A+</button>
+              <button
+                className="btn-ghost"
+                onClick={() => setWordWrap((w) => !w)}
+                title="Toggle word wrap"
+                style={{ padding: "2px 6px", fontSize: 11, fontWeight: 600, color: wordWrap ? "var(--accent)" : undefined }}
+              >WRAP</button>
+              <button
+                className="btn-ghost"
+                onClick={resetCode}
+                title="Reset to starter code"
+                style={{ padding: "2px 6px", fontSize: 11, fontWeight: 600 }}
+              >RESET</button>
+              <span style={{ fontSize: 10.5, fontFamily: "var(--mono)", color: "var(--text-faint)", marginLeft: 4 }}>main.py</span>
+            </div>
           </div>
           <div style={{ flex: 1, minHeight: 0 }}>
             <Editor
@@ -395,7 +557,8 @@ export default function Page() {
               onChange={(v) => setCode(v ?? "")}
               theme={theme === "dark" ? "vs-dark" : "vs"}
               options={{
-                fontSize: 14,
+                fontSize,
+                wordWrap: wordWrap ? "on" : "off",
                 minimap: { enabled: false },
                 automaticLayout: true,
                 fontFamily: "var(--font-mono), ui-monospace, 'JetBrains Mono', Menlo, monospace",
@@ -467,8 +630,94 @@ export default function Page() {
               style={{ fontFamily: "var(--mono)", fontSize: 13, minHeight: 52, resize: "vertical", width: "100%" }}
             />
           </div>
+
+          <div className="panel" style={{ padding: "12px 16px" }}>
+            <label style={{
+              display: "flex", alignItems: "center", gap: 6,
+              color: "var(--text-faint)", fontSize: 11, marginBottom: 8,
+              textTransform: "uppercase", letterSpacing: "0.09em", fontWeight: 600,
+            }}>
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
+              pip install
+            </label>
+            <form
+              onSubmit={(e) => { e.preventDefault(); installPackages(); }}
+              style={{ display: "flex", gap: 6 }}
+            >
+              <input
+                value={pkgInput}
+                onChange={(e) => setPkgInput(e.target.value)}
+                placeholder="e.g. requests beautifulsoup4"
+                disabled={installing || pyStatus !== "ready"}
+                style={{ flex: 1, fontFamily: "var(--mono)", fontSize: 13 }}
+              />
+              <button type="submit" className="btn" disabled={installing || pyStatus !== "ready" || !pkgInput.trim()}>
+                {installing ? "…" : "Install"}
+              </button>
+            </form>
+          </div>
         </section>
       </main>
+
+      {toast && (
+        <div style={{
+          position: "fixed",
+          bottom: 22,
+          left: "50%",
+          transform: "translateX(-50%)",
+          background: "var(--panel-2)",
+          border: "1px solid var(--border-strong)",
+          padding: "10px 18px",
+          borderRadius: 10,
+          boxShadow: "var(--shadow)",
+          fontSize: 13,
+          color: "var(--text)",
+          animation: "fadeInUp 0.2s ease",
+          zIndex: 100,
+        }}>
+          {toast}
+        </div>
+      )}
+
+      {showShortcuts && (
+        <>
+          <div
+            onClick={() => setShowShortcuts(false)}
+            style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 50, backdropFilter: "blur(4px)" }}
+          />
+          <div style={{
+            position: "fixed",
+            top: "50%", left: "50%",
+            transform: "translate(-50%, -50%)",
+            background: "var(--panel)",
+            border: "1px solid var(--border-strong)",
+            borderRadius: 14,
+            padding: 24,
+            minWidth: 340,
+            boxShadow: "0 40px 80px -20px rgba(0,0,0,0.6)",
+            zIndex: 51,
+            animation: "fadeInUp 0.18s ease",
+          }}>
+            <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 16 }}>Keyboard Shortcuts</div>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+              <tbody>
+                {[
+                  ["Run code", "⌘↵ / Ctrl+Enter"],
+                  ["Download as .py", "⌘S / Ctrl+S"],
+                  ["Toggle shortcuts", "⌘/ / Ctrl+/"],
+                  ["Close dialogs", "Esc"],
+                ].map(([label, keys]) => (
+                  <tr key={label}>
+                    <td style={{ padding: "8px 0", color: "var(--text-dim)" }}>{label}</td>
+                    <td style={{ padding: "8px 0", textAlign: "right" }}><span className="kbd">{keys}</span></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <button className="btn" onClick={() => setShowShortcuts(false)} style={{ width: "100%", marginTop: 16, justifyContent: "center" }}>Close</button>
+          </div>
+        </>
+      )}
     </div>
   );
 }
