@@ -215,10 +215,19 @@ export default function Page() {
   const [aiInput, setAiInput] = useState("");
   const aiScrollRef = useRef<HTMLDivElement>(null);
   const aiContextRef = useRef<{ code: string; stdout: string; stderr: string; exitCode: number } | null>(null);
-  const pyodideRef = useRef<any>(null);
+  const [awaitingStdin, setAwaitingStdin] = useState(false);
+  const [stdinLive, setStdinLive] = useState("");
+  const stdinQueueRef = useRef<string[]>([]);
+  const workerRef = useRef<Worker | null>(null);
+  const ctrlSabRef = useRef<SharedArrayBuffer | null>(null);
+  const dataSabRef = useRef<SharedArrayBuffer | null>(null);
+  const runStartRef = useRef<number>(0);
+  const runStdoutRef = useRef<string>("");
+  const runStderrRef = useRef<string>("");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const codeRef = useRef(code); codeRef.current = code;
   const stdinRef = useRef(stdin); stdinRef.current = stdin;
+  const stdinLiveInputRef = useRef<HTMLInputElement>(null);
   const outRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -268,35 +277,81 @@ export default function Page() {
   }
 
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        setLoadProgress("downloading runtime");
-        if (!window.loadPyodide) {
-          await new Promise<void>((resolve, reject) => {
-            const s = document.createElement("script");
-            s.src = PYODIDE_URL;
-            s.onload = () => resolve();
-            s.onerror = () => reject(new Error("failed to load pyodide.js"));
-            document.head.appendChild(s);
-          });
-        }
-        setLoadProgress("initializing interpreter");
-        const py = await window.loadPyodide!({ indexURL: PYODIDE_INDEX });
-        if (cancelled) return;
-        const version = py.runPython("import sys; sys.version.split()[0]");
-        pyodideRef.current = py;
-        setPyVersion(version);
+    if (typeof SharedArrayBuffer === "undefined") {
+      setPyStatus("error");
+      setLines([{
+        text: "This page needs cross-origin isolation (COOP/COEP headers) for SharedArrayBuffer. If you see this locally on an older dev server, restart it after the next.config change.",
+        kind: "err",
+      }]);
+      return;
+    }
+    setLoadProgress("starting worker");
+    const w = new Worker("/py-worker.js");
+    workerRef.current = w;
+    ctrlSabRef.current = new SharedArrayBuffer(8);
+    dataSabRef.current = new SharedArrayBuffer(64 * 1024);
+    w.onmessage = (ev: MessageEvent) => {
+      const m = ev.data;
+      if (m.type === "ready") {
+        setPyVersion(m.version);
         setPyStatus("ready");
-        setLines([{ text: `Python ${version} ready. Press `, kind: "meta" }, { text: "Ctrl+Enter", kind: "out" }, { text: " to run your code.", kind: "meta" }]);
-      } catch (e: any) {
-        if (cancelled) return;
-        setPyStatus("error");
-        setLines([{ text: `Failed to load Pyodide: ${e.message}`, kind: "err" }]);
+        setLines([{ text: `Python ${m.version} ready. Press `, kind: "meta" }, { text: "Ctrl+Enter", kind: "out" }, { text: " to run your code.", kind: "meta" }]);
+      } else if (m.type === "stdout") {
+        runStdoutRef.current += m.text;
+        setLines((ls) => [...ls, { text: m.text, kind: "out" }]);
+      } else if (m.type === "stderr") {
+        runStderrRef.current += m.text;
+        setLines((ls) => [...ls, { text: m.text, kind: "err" }]);
+      } else if (m.type === "stdin-request") {
+        if (stdinQueueRef.current.length > 0) {
+          const v = stdinQueueRef.current.shift()!;
+          submitStdin(v);
+        } else {
+          setAwaitingStdin(true);
+          setTimeout(() => stdinLiveInputRef.current?.focus(), 20);
+        }
+      } else if (m.type === "done") {
+        setLines((ls) => [...ls, { text: `\n✓ Ran successfully in ${m.durationMs}ms\n`, kind: "meta" }]);
+        setLastRun({ stdout: runStdoutRef.current, stderr: runStderrRef.current, code: 0, durationMs: m.durationMs });
+        setBusy(false);
+        setAwaitingStdin(false);
+      } else if (m.type === "error") {
+        const cleaned = cleanPyodideTraceback(m.message ?? "");
+        runStderrRef.current += cleaned;
+        setLines((ls) => [...ls, { text: cleaned + "\n", kind: "err" }, { text: `\n✗ Errored after ${m.durationMs}ms\n`, kind: "meta" }]);
+        setLastRun({ stdout: runStdoutRef.current, stderr: runStderrRef.current, code: 1, durationMs: m.durationMs });
+        setBusy(false);
+        setAwaitingStdin(false);
+      } else if (m.type === "install-done") {
+        setLines((ls) => [...ls, { text: `Done. You can now import.\n`, kind: "meta" }]);
+        setInstalling(false);
+      } else if (m.type === "install-error") {
+        setLines((ls) => [...ls, { text: `  ✗ ${m.message}\n`, kind: "err" }]);
+        setInstalling(false);
       }
-    })();
-    return () => { cancelled = true; };
+    };
+    setLoadProgress("downloading Python runtime");
+    w.postMessage({ type: "init" });
+    return () => { w.terminate(); };
   }, []);
+
+  function submitStdin(value: string) {
+    const ctrl = ctrlSabRef.current;
+    const data = dataSabRef.current;
+    if (!ctrl || !data) return;
+    const bytes = new TextEncoder().encode(value);
+    const view = new Uint8Array(data);
+    view.set(bytes);
+    const ctrlView = new Int32Array(ctrl);
+    Atomics.store(ctrlView, 1, bytes.length);
+    Atomics.store(ctrlView, 0, 1);
+    Atomics.notify(ctrlView, 0);
+    // echo into output
+    setLines((ls) => [...ls, { text: value + "\n", kind: "out" }]);
+    runStdoutRef.current += value + "\n";
+    setAwaitingStdin(false);
+    setStdinLive("");
+  }
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -323,44 +378,19 @@ export default function Page() {
   }
 
   async function run() {
-    const py = pyodideRef.current;
-    if (!py || pyStatus !== "ready") return;
+    if (!workerRef.current || pyStatus !== "ready" || busy) return;
     setBusy(true);
-    const started = performance.now();
-    let stdout = "";
-    let stderr = "";
-    try {
-      py.setStdout({ batched: (s: string) => { stdout += s + "\n"; } });
-      py.setStderr({ batched: (s: string) => { stderr += s + "\n"; } });
-      if (stdinRef.current) {
-        const inputLines = stdinRef.current.split("\n");
-        let i = 0;
-        py.setStdin({ stdin: () => (i < inputLines.length ? inputLines[i++] : null) });
-      } else {
-        py.setStdin({ stdin: () => null });
-      }
-      await py.loadPackagesFromImports(codeRef.current);
-      await py.runPythonAsync(codeRef.current);
-      const duration = Math.round(performance.now() - started);
-      setLines([]);
-      if (stdout) append(stdout, "out");
-      append(`\n✓ Ran successfully in ${duration}ms\n`, "meta");
-      setLastRun({ stdout, stderr: "", code: 0, durationMs: duration });
-    } catch (e: any) {
-      const duration = Math.round(performance.now() - started);
-      setLines([]);
-      if (stdout) append(stdout, "out");
-      const cleaned = cleanPyodideTraceback(e?.message ?? String(e));
-      stderr += cleaned;
-      append(cleaned + "\n", "err");
-      if (/EOFError.*reading a line/i.test(cleaned)) {
-        append(`\n💡 Your code called input() but the stdin box is empty. Type the input below — one line per input() call — then Run again.\n`, "meta");
-      }
-      append(`\n✗ Errored after ${duration}ms\n`, "meta");
-      setLastRun({ stdout, stderr, code: 1, durationMs: duration });
-    } finally {
-      setBusy(false);
-    }
+    setLines([]);
+    runStdoutRef.current = "";
+    runStderrRef.current = "";
+    runStartRef.current = performance.now();
+    stdinQueueRef.current = stdinRef.current ? stdinRef.current.split("\n").filter((_, i, a) => i < a.length - 1 || a[i] !== "") : [];
+    workerRef.current.postMessage({
+      type: "run",
+      code: codeRef.current,
+      sab: ctrlSabRef.current,
+      dataSab: dataSabRef.current,
+    });
   }
 
   function downloadFile() {
@@ -402,26 +432,13 @@ export default function Page() {
   }
 
   async function installPackages() {
-    const py = pyodideRef.current;
-    if (!py || pyStatus !== "ready") return;
+    if (!workerRef.current || pyStatus !== "ready") return;
     const names = pkgInput.trim().split(/\s+/).filter(Boolean);
     if (!names.length) return;
     setInstalling(true);
     append(`\n📦 Installing ${names.join(", ")} via micropip...\n`, "meta");
-    try {
-      await py.loadPackage("micropip");
-      const micropip = py.pyimport("micropip");
-      for (const name of names) {
-        await micropip.install(name);
-        append(`  ✓ ${name}\n`, "meta");
-      }
-      append(`Done. You can now \`import\` them.\n`, "meta");
-      setPkgInput("");
-    } catch (e: any) {
-      append(`  ✗ ${e.message}\n`, "err");
-    } finally {
-      setInstalling(false);
-    }
+    workerRef.current.postMessage({ type: "install", packages: names });
+    setPkgInput("");
   }
 
   async function explain() {
@@ -786,6 +803,34 @@ export default function Page() {
                   fontStyle: l.kind === "meta" ? "italic" : "normal",
                 }}>{l.text}</span>
               ))}
+              {awaitingStdin && (
+                <form
+                  onSubmit={(e) => { e.preventDefault(); submitStdin(stdinLive); }}
+                  style={{ display: "inline-flex", alignItems: "center", gap: 6, marginTop: 2 }}
+                >
+                  <span style={{ color: "var(--accent)" }}>▸</span>
+                  <input
+                    ref={stdinLiveInputRef}
+                    value={stdinLive}
+                    onChange={(e) => setStdinLive(e.target.value)}
+                    autoFocus
+                    spellCheck={false}
+                    style={{
+                      background: "transparent",
+                      border: "none",
+                      borderBottom: "1px dashed var(--accent)",
+                      borderRadius: 0,
+                      padding: "2px 4px",
+                      fontFamily: "var(--mono)",
+                      fontSize: 13,
+                      color: "var(--text)",
+                      minWidth: 240,
+                      outline: "none",
+                      boxShadow: "none",
+                    }}
+                  />
+                </form>
+              )}
             </div>
           </div>
 
@@ -796,13 +841,13 @@ export default function Page() {
               textTransform: "uppercase", letterSpacing: "0.09em", fontWeight: 600,
             }}>
               <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
-              stdin
+              stdin (pre-filled)
             </label>
             <textarea
               value={stdin}
               onChange={(e) => setStdin(e.target.value)}
               spellCheck={false}
-              placeholder="optional — one line per input() call"
+              placeholder="Leave empty to type inputs interactively when input() runs"
               style={{ fontFamily: "var(--mono)", fontSize: 13, minHeight: 52, resize: "vertical", width: "100%" }}
             />
           </div>
