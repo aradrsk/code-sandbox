@@ -47,7 +47,14 @@ print(f"Nice to meet you, {name}!")
   },
 ];
 
-type OutLine = { text: string; kind: "out" | "err" | "meta" };
+type OutLine = { text: string; kind: "out" | "err" | "meta" } | { kind: "image"; data: string };
+
+function extractErrorLine(raw: string): number | null {
+  // find File "<exec>", line N
+  const m = /File "<exec>", line (\d+)/.exec(raw);
+  if (m) return parseInt(m[1], 10);
+  return null;
+}
 
 function cleanPyodideTraceback(raw: string): string {
   const lines = raw.split("\n");
@@ -217,6 +224,9 @@ export default function Page() {
   const aiContextRef = useRef<{ code: string; stdout: string; stderr: string; exitCode: number } | null>(null);
   const [awaitingStdin, setAwaitingStdin] = useState(false);
   const [stdinLive, setStdinLive] = useState("");
+  const [errorLine, setErrorLine] = useState<number | null>(null);
+  const editorRef = useRef<any>(null);
+  const monacoRef = useRef<any>(null);
   const stdinQueueRef = useRef<string[]>([]);
   const workerRef = useRef<Worker | null>(null);
   const ctrlSabRef = useRef<SharedArrayBuffer | null>(null);
@@ -276,18 +286,8 @@ export default function Page() {
     setTimeout(() => setToast(""), 2200);
   }
 
-  useEffect(() => {
-    if (typeof SharedArrayBuffer === "undefined") {
-      setPyStatus("error");
-      setLines([{
-        text: "This page needs cross-origin isolation (COOP/COEP headers) for SharedArrayBuffer. If you see this locally on an older dev server, restart it after the next.config change.",
-        kind: "err",
-      }]);
-      return;
-    }
-    setLoadProgress("starting worker");
+  const spawnWorker = () => {
     const w = new Worker("/py-worker.js");
-    workerRef.current = w;
     ctrlSabRef.current = new SharedArrayBuffer(8);
     dataSabRef.current = new SharedArrayBuffer(64 * 1024);
     w.onmessage = (ev: MessageEvent) => {
@@ -295,13 +295,17 @@ export default function Page() {
       if (m.type === "ready") {
         setPyVersion(m.version);
         setPyStatus("ready");
-        setLines([{ text: `Python ${m.version} ready. Press `, kind: "meta" }, { text: "Ctrl+Enter", kind: "out" }, { text: " to run your code.", kind: "meta" }]);
+        setLines((ls) => ls.length === 1 && ls[0].kind === "meta"
+          ? [{ text: `Python ${m.version} ready. Press `, kind: "meta" }, { text: "Ctrl+Enter", kind: "out" }, { text: " to run your code.", kind: "meta" }]
+          : ls);
       } else if (m.type === "stdout") {
         runStdoutRef.current += m.text;
         setLines((ls) => [...ls, { text: m.text, kind: "out" }]);
       } else if (m.type === "stderr") {
         runStderrRef.current += m.text;
         setLines((ls) => [...ls, { text: m.text, kind: "err" }]);
+      } else if (m.type === "image") {
+        setLines((ls) => [...ls, { kind: "image", data: m.data }]);
       } else if (m.type === "stdin-request") {
         if (stdinQueueRef.current.length > 0) {
           const v = stdinQueueRef.current.shift()!;
@@ -315,6 +319,7 @@ export default function Page() {
         setLastRun({ stdout: runStdoutRef.current, stderr: runStderrRef.current, code: 0, durationMs: m.durationMs });
         setBusy(false);
         setAwaitingStdin(false);
+        setErrorLine(null);
       } else if (m.type === "error") {
         const cleaned = cleanPyodideTraceback(m.message ?? "");
         runStderrRef.current += cleaned;
@@ -322,6 +327,8 @@ export default function Page() {
         setLastRun({ stdout: runStdoutRef.current, stderr: runStderrRef.current, code: 1, durationMs: m.durationMs });
         setBusy(false);
         setAwaitingStdin(false);
+        const ln = extractErrorLine(m.message ?? "");
+        setErrorLine(ln);
       } else if (m.type === "install-done") {
         setLines((ls) => [...ls, { text: `Done. You can now import.\n`, kind: "meta" }]);
         setInstalling(false);
@@ -330,10 +337,40 @@ export default function Page() {
         setInstalling(false);
       }
     };
+    workerRef.current = w;
+    return w;
+  };
+
+  useEffect(() => {
+    if (typeof SharedArrayBuffer === "undefined") {
+      setPyStatus("error");
+      setLines([{
+        text: "This page needs cross-origin isolation (COOP/COEP headers) for SharedArrayBuffer. If you see this locally on an older dev server, restart it after the next.config change.",
+        kind: "err",
+      }]);
+      return;
+    }
+    setLoadProgress("starting worker");
+    const w = spawnWorker();
     setLoadProgress("downloading Python runtime");
     w.postMessage({ type: "init" });
     return () => { w.terminate(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  function stopRun() {
+    if (!workerRef.current) return;
+    workerRef.current.terminate();
+    setBusy(false);
+    setAwaitingStdin(false);
+    setInstalling(false);
+    setLines((ls) => [...ls, { text: `\n⏹ Execution stopped by user\n`, kind: "meta" }]);
+    setPyStatus("loading");
+    setPyVersion("");
+    setLoadProgress("restarting worker");
+    const w = spawnWorker();
+    w.postMessage({ type: "init" });
+  }
 
   function submitStdin(value: string) {
     const ctrl = ctrlSabRef.current;
@@ -373,7 +410,28 @@ export default function Page() {
     if (aiScrollRef.current) aiScrollRef.current.scrollTop = aiScrollRef.current.scrollHeight;
   }, [aiMessages, aiLoading]);
 
-  function append(text: string, kind: OutLine["kind"] = "out") {
+  useEffect(() => {
+    const editor = editorRef.current;
+    const monaco = monacoRef.current;
+    if (!editor || !monaco) return;
+    const model = editor.getModel();
+    if (!model) return;
+    if (errorLine) {
+      monaco.editor.setModelMarkers(model, "pyerror", [{
+        startLineNumber: errorLine,
+        endLineNumber: errorLine,
+        startColumn: 1,
+        endColumn: 1000,
+        message: "Error occurred on this line",
+        severity: monaco.MarkerSeverity.Error,
+      }]);
+      editor.revealLineInCenter(errorLine);
+    } else {
+      monaco.editor.setModelMarkers(model, "pyerror", []);
+    }
+  }, [errorLine]);
+
+  function append(text: string, kind: "out" | "err" | "meta" = "out") {
     setLines((ls) => [...ls, { text, kind }]);
   }
 
@@ -558,15 +616,31 @@ export default function Page() {
 
         <span style={{ width: 1, height: 24, background: "var(--border)", margin: "0 6px" }} />
 
-        <button
-          className="btn-primary"
-          onClick={run}
-          disabled={busy || pyStatus !== "ready"}
-        >
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
-          {busy ? "Running…" : "Run"}
-          <span className="kbd">⌘↵</span>
-        </button>
+        {busy ? (
+          <button
+            onClick={stopRun}
+            style={{
+              padding: "8px 18px", borderRadius: 8, cursor: "pointer",
+              background: "linear-gradient(135deg, #f87171, #ef4444)",
+              color: "#fff", fontWeight: 600, border: "none",
+              boxShadow: "0 4px 16px rgba(248,113,113,0.3), inset 0 1px 0 rgba(255,255,255,0.2)",
+              display: "inline-flex", alignItems: "center", gap: 10, fontSize: 13,
+            }}
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
+            Stop
+          </button>
+        ) : (
+          <button
+            className="btn-primary"
+            onClick={run}
+            disabled={pyStatus !== "ready"}
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+            Run
+            <span className="kbd">⌘↵</span>
+          </button>
+        )}
 
         <div style={{ position: "relative" }}>
           <button className="btn" onClick={() => setShowExamples((s) => !s)}>
@@ -747,7 +821,8 @@ export default function Page() {
               height="100%"
               language="python"
               value={code}
-              onChange={(v) => setCode(v ?? "")}
+              onChange={(v) => { setCode(v ?? ""); if (errorLine) setErrorLine(null); }}
+              onMount={(editor, monaco) => { editorRef.current = editor; monacoRef.current = monaco; }}
               theme={theme === "dark" ? "vs-dark" : "vs"}
               options={{
                 fontSize,
@@ -797,7 +872,15 @@ export default function Page() {
               lineHeight: 1.6,
               background: "var(--output-bg)",
             }}>
-              {lines.map((l, i) => (
+              {lines.map((l, i) => l.kind === "image" ? (
+                <div key={i} style={{ margin: "6px 0", display: "block" }}>
+                  <img
+                    src={`data:image/png;base64,${l.data}`}
+                    alt="matplotlib figure"
+                    style={{ maxWidth: "100%", borderRadius: 8, border: "1px solid var(--border)", background: "#fff" }}
+                  />
+                </div>
+              ) : (
                 <span key={i} style={{
                   color: l.kind === "err" ? "var(--err)" : l.kind === "meta" ? "var(--text-faint)" : "var(--text)",
                   fontStyle: l.kind === "meta" ? "italic" : "normal",

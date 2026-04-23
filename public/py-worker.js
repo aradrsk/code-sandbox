@@ -15,6 +15,34 @@ self.importScripts(`https://cdn.jsdelivr.net/pyodide/v${PYODIDE_VERSION}/full/py
 
 let pyodide = null;
 
+const MPL_PATCH = `
+import os
+os.environ["MPLBACKEND"] = "AGG"
+
+def _sandbox_install_mpl_hook():
+    try:
+        import matplotlib
+        matplotlib.use("AGG")
+        import matplotlib.pyplot as plt
+        import io, base64, sys
+        _orig_show = plt.show
+        def _capture_show(*a, **kw):
+            for num in plt.get_fignums():
+                fig = plt.figure(num)
+                buf = io.BytesIO()
+                fig.savefig(buf, format="png", bbox_inches="tight", dpi=110)
+                buf.seek(0)
+                b64 = base64.b64encode(buf.read()).decode()
+                sys.stdout.write("\\x1b__SANDBOX_IMG__" + b64 + "\\x1b__END_IMG__\\n")
+                sys.stdout.flush()
+            plt.close("all")
+        plt.show = _capture_show
+    except ImportError:
+        pass
+
+_sandbox_install_mpl_hook()
+`;
+
 async function init() {
   pyodide = await loadPyodide({
     indexURL: `https://cdn.jsdelivr.net/pyodide/v${PYODIDE_VERSION}/full/`,
@@ -43,14 +71,39 @@ function blockingStdin(controlSab, dataSab) {
   };
 }
 
+function emitChunk(kind, text) {
+  // extract image markers
+  const re = /\x1b__SANDBOX_IMG__([\s\S]*?)\x1b__END_IMG__\n?/g;
+  let last = 0;
+  let m;
+  while ((m = re.exec(text))) {
+    if (m.index > last) {
+      self.postMessage({ type: kind, text: text.slice(last, m.index) });
+    }
+    self.postMessage({ type: "image", data: m[1] });
+    last = re.lastIndex;
+  }
+  if (last < text.length) {
+    self.postMessage({ type: kind, text: text.slice(last) });
+  }
+}
+
 async function run(code, controlSab, dataSab) {
   const started = performance.now();
-  pyodide.setStdout({ batched: (s) => self.postMessage({ type: "stdout", text: s + "\n" }) });
-  pyodide.setStderr({ batched: (s) => self.postMessage({ type: "stderr", text: s + "\n" }) });
+  pyodide.setStdout({ batched: (s) => emitChunk("stdout", s + "\n") });
+  pyodide.setStderr({ batched: (s) => emitChunk("stderr", s + "\n") });
   pyodide.setStdin({ stdin: blockingStdin(controlSab, dataSab) });
   try {
     await pyodide.loadPackagesFromImports(code);
+    // Auto-install mpl hook if the user imports matplotlib
+    if (/\b(import\s+matplotlib|from\s+matplotlib)/.test(code)) {
+      await pyodide.runPythonAsync(MPL_PATCH);
+    }
     await pyodide.runPythonAsync(code);
+    // Auto-show pending figures if user forgot plt.show()
+    if (/\b(import\s+matplotlib|from\s+matplotlib)/.test(code)) {
+      await pyodide.runPythonAsync("try:\n  import matplotlib.pyplot as plt; plt.show()\nexcept Exception:\n  pass");
+    }
     self.postMessage({ type: "done", durationMs: Math.round(performance.now() - started) });
   } catch (e) {
     self.postMessage({ type: "error", message: e && e.message ? e.message : String(e), durationMs: Math.round(performance.now() - started) });
